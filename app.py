@@ -38,7 +38,7 @@ BENCHMARK_SYMBOL = "^CRSLDX"  # Nifty 500
 
 col_opt1, col_opt2 = st.columns(2)
 with col_opt1:
-  use_rs_filter = st.checkbox("Nifty 500 Mansfield RS ગણવું?", value=True)
+  use_rs_filter = st.checkbox("Nifty 500 Mansfield RS ?", value=True)
 with col_opt2:
   refresh = st.button("🔄 Data Refresh")
 
