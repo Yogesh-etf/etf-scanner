@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -10,7 +9,7 @@ st.set_page_config(page_title="ETF Momentum Scanner", layout="wide")
 
 st.markdown("""
     <h2 style='text-align: center; color: #1E88E5;'>📊 ETF Momentum & RS Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px;'>Live Market Dashboard</p>
+    <p style='text-align: center; color: gray; font-size: 14px;'>ScreeningMantis Style Live Dashboard with Dynamic Gold/Silver RS</p>
 """, unsafe_allow_html=True)
 
 # મૂળભૂત ૧૫ ETF
@@ -23,13 +22,12 @@ DEFAULT_ETFS = [
 
 BENCHMARK_SYMBOL = "^CRSLDX" # Nifty 500
 
-# સાઇડબાર: ETF ઉમેરવા અને કાઢી નાખવા માટેનું કંટ્રોલ પેનલ
+# સાઇડબાર: ETF મેનેજમેન્ટ
 st.sidebar.header("⚙️ ETF મેનેજર")
 
 if "etf_pool" not in st.session_state:
     st.session_state.etf_pool = list(DEFAULT_ETFS)
 
-# ૧. નવો ETF ઉમેરવા માટેનું બોક્સ
 new_etf_input = st.sidebar.text_input("➕ નવો ETF ઉમેરો (દા.ત. BANKBEES):").strip().upper()
 if new_etf_input:
     clean_sym = new_etf_input.replace(".NS", "").strip()
@@ -37,17 +35,16 @@ if new_etf_input:
         st.session_state.etf_pool.append(clean_sym)
         st.sidebar.success(f"{clean_sym} ઉમેરાઈ ગયો!")
 
-# ૨. ETF કાઢી નાખવા માટેનું મલ્ટિ-સિલેક્ટ લિસ્ટ
 selected_tickers = st.sidebar.multiselect(
     "📋 સક્રિય ETF (કાઢવા માટે × દબાવો):",
     options=st.session_state.etf_pool,
     default=st.session_state.etf_pool
 )
 
-use_rs_filter = st.sidebar.checkbox("Nifty 500 Mansfield RS ગણવું?", value=True)
+use_rs_filter = st.sidebar.checkbox("Nifty 500 Mansfield RS?", value=True)
 refresh = st.sidebar.button("🔄 Data Refresh")
 
-# TradingView Wilder's RMA RSI
+# Wilder's RMA RSI
 def get_tv_wilder_rsi(series, period=14):
     clean_s = series.dropna()
     if len(clean_s) <= period + 1:
@@ -65,12 +62,12 @@ def get_tv_wilder_rsi(series, period=14):
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
-# ડેટા ફેચિંગ (સુરક્ષિત રીતે જેથી IndexError ન આવે)
+# ડેટા ફેચિંગ
 @st.cache_data(ttl=120)
 def fetch_safe_data(ticker_list):
     if not ticker_list:
         return None, None
-    symbols = [f"{t}.NS" for t in ticker_list] + [BENCHMARK_SYMBOL]
+    symbols = list(set([f"{t}.NS" for t in ticker_list] + [BENCHMARK_SYMBOL, "GOLDBEES.NS", "SILVERBEES.NS"]))
     df = yf.download(symbols, period="5y", interval="1d", auto_adjust=False, progress=False)
     if df.empty:
         return None, None
@@ -90,6 +87,51 @@ else:
 
         if df_weekly is not None and not df_weekly.empty and BENCHMARK_SYMBOL in df_weekly.columns:
             bench_series = df_weekly[BENCHMARK_SYMBOL].dropna()
+
+            # Gold & Silver સીરીઝ ચેક કરવી
+            has_gold = "GOLDBEES.NS" in df_weekly.columns and len(df_weekly["GOLDBEES.NS"].dropna()) >= 55
+            has_silver = "SILVERBEES.NS" in df_weekly.columns and len(df_weekly["SILVERBEES.NS"].dropna()) >= 55
+
+            gold_bullish = False
+            silver_bullish = False
+            silver_vs_gold_mrs = 0.0
+            live_ratio = None
+
+            if has_gold and has_silver:
+                g_series = df_weekly["GOLDBEES.NS"].dropna()
+                s_series = df_weekly["SILVERBEES.NS"].dropna()
+
+                g_ema20 = float(g_series.ewm(span=20, adjust=False).mean().iloc[-1])
+                s_ema20 = float(s_series.ewm(span=20, adjust=False).mean().iloc[-1])
+
+                g_rsi = float(get_tv_wilder_rsi(g_series, 14).dropna().iloc[-1])
+                s_rsi = float(get_tv_wilder_rsi(s_series, 14).dropna().iloc[-1])
+
+                g_ltp = float(raw_daily["GOLDBEES.NS"].dropna().iloc[-1])
+                s_ltp = float(raw_daily["SILVERBEES.NS"].dropna().iloc[-1])
+
+                gold_bullish = (g_ltp > g_ema20) and (g_rsi > 60.0)
+                silver_bullish = (s_ltp > s_ema20) and (s_rsi > 60.0)
+
+                # Silver vs Gold Mansfield RS
+                combined_gs = pd.concat([s_series, g_series], axis=1, join='inner')
+                ratio_series = combined_gs.iloc[:, 0] / combined_gs.iloc[:, 1]
+                sma52_ratio = ratio_series.rolling(52).mean()
+                mrs_gs_series = (((ratio_series / sma52_ratio) - 1.0) * 100.0).dropna()
+                silver_vs_gold_mrs = float(mrs_gs_series.iloc[-1]) if not mrs_gs_series.empty else 0.0
+
+                live_ratio = g_ltp / s_ltp
+
+                # માહિતી કાર્ડ દર્શાવવું
+                c1, c2, c3 = st.columns(3)
+                c1.metric("🟡 GoldBees LTP", f"₹{g_ltp:.2f}", f"RSI: {g_rsi:.1f}")
+                c2.metric("⚪ SilverBees LTP", f"₹{s_ltp:.2f}", f"RSI: {s_rsi:.1f}")
+                if gold_bullish and silver_bullish:
+                    favoured = "Silver Favoured (High Beta)" if silver_vs_gold_mrs > 0 else "Gold Favoured (Safety)"
+                    c3.metric("🔥 Both in Bull Run!", f"RS vs Gold: {silver_vs_gold_mrs:+.2f}%", favoured)
+                else:
+                    c3.metric("⚖️ Gold/Silver Ratio", f"{live_ratio:.2f}", "Normal Tracking")
+
             data_rows = []
 
             for ticker in selected_tickers:
@@ -108,12 +150,6 @@ else:
                         continue
                     rsi = float(rsi_series.iloc[-1])
 
-                    combined = pd.concat([series, bench_series], axis=1, join='inner')
-                    ratio = combined.iloc[:, 0] / combined.iloc[:, 1]
-                    sma52 = ratio.rolling(52).mean()
-                    mrs_series = (((ratio / sma52) - 1.0) * 100.0).dropna()
-                    mrs = float(mrs_series.iloc[-1]) if not mrs_series.empty else 0.0
-
                     daily_s = raw_daily[sym].dropna()
                     if daily_s.empty:
                         continue
@@ -121,28 +157,45 @@ else:
 
                     above_ema = ltp > ema20
                     rsi_bull = rsi > 60.0
-                    mrs_bull = mrs > 0.0
 
-                    # કોમોડિટી ઓળખવી (ગોલ્ડ કે સિલ્વર)
-                    is_commodity = any(c in ticker for c in ["GOLD", "SILVER"])
-                    etf_type = "Commodity" if is_commodity else "Equity"
+                    is_gold = (ticker == "GOLDBEES")
+                    is_silver = (ticker == "SILVERBEES")
+                    is_commodity = is_gold or is_silver
 
-                    if is_commodity:
+                    # --- ગણતરી: Dynamic RS Logic ---
+                    if is_silver and gold_bullish and silver_bullish:
+                        # બંને તેજીમાં હોય ત્યારે Silver નો RS Gold સામે ગણાશે
+                        mrs = silver_vs_gold_mrs
+                        mrs_display = f"vs Gold: {mrs:+.2f}"
+                        mrs_val = mrs
+                        rs_cond = (mrs > 0.0) # ચાંદી આગળ હોવી જોઈએ
+                    elif is_commodity:
+                        # સામાન્ય સ્થિતિમાં કોમોડિટીને Nifty 500 RS માંથી મુક્તિ
+                        mrs = 0.0
+                        mrs_display = "Exempt"
+                        mrs_val = 0.0
                         rs_cond = True
-                        mrs_display = 0.0
                     else:
-                        rs_cond = mrs_bull if use_rs_filter else True
-                        mrs_display = round(mrs, 2)
+                        # ઇક્વિટી માટે Nifty 500 સાથે Mansfield RS
+                        combined = pd.concat([series, bench_series], axis=1, join='inner')
+                        ratio = combined.iloc[:, 0] / combined.iloc[:, 1]
+                        sma52 = ratio.rolling(52).mean()
+                        mrs_series = (((ratio / sma52) - 1.0) * 100.0).dropna()
+                        mrs = float(mrs_series.iloc[-1]) if not mrs_series.empty else 0.0
+                        mrs_display = f"{mrs:.2f}"
+                        mrs_val = mrs
+                        rs_cond = (mrs > 0.0) if use_rs_filter else True
 
                     qualified = above_ema and rsi_bull and rs_cond
 
                     data_rows.append({
                         'ETF': ticker,
-                        'Type': etf_type,
+                        'Type': "Commodity" if is_commodity else "Equity",
                         'LTP': round(ltp, 2),
                         'EMA 20': round(ema20, 2),
                         'RSI': round(rsi, 2),
                         'Mansfield RS': mrs_display,
+                        'mrs_val': mrs_val,
                         'above_ema': above_ema,
                         'qualified': qualified
                     })
@@ -151,8 +204,9 @@ else:
 
             if data_rows:
                 df = pd.DataFrame(data_rows)
+                # સ્કોરિંગ
                 if use_rs_filter:
-                    df['score'] = df['RSI'] + (df['Mansfield RS'] * 2.0)
+                    df['score'] = df['RSI'] + (df['mrs_val'] * 2.0)
                 else:
                     df['score'] = df['RSI']
 
@@ -179,20 +233,12 @@ else:
                     elif val <= 50: return 'background-color: #FFCDD2; color: black;'
                     return ''
 
-                def highlight_mrs(val):
-                    if val > 5: return 'background-color: #2E7D32; color: white;'
-                    elif val > 0: return 'background-color: #81C784; color: black;'
-                    elif val < -5: return 'background-color: #C62828; color: white;'
-                    elif val < 0: return 'background-color: #FFCDD2; color: black;'
-                    return ''
-
                 view_df = df[['Rank', 'ETF', 'Type', 'LTP', 'EMA 20', 'RSI', 'Mansfield RS', 'Signal']]
                 styled_df = view_df.style.map(highlight_rsi, subset=['RSI'])\
-                                         .map(highlight_mrs, subset=['Mansfield RS'])\
-                                         .format({'LTP': '₹{:.2f}', 'EMA 20': '₹{:.2f}', 'RSI': '{:.2f}', 'Mansfield RS': '{:.2f}'})
+                                         .format({'LTP': '₹{:.2f}', 'EMA 20': '₹{:.2f}', 'RSI': '{:.2f}'})
 
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
             else:
-                st.warning("હાલ માર્કેટ ડેટા અપડેટ થઈ રહ્યો છે, કૃપા કરીને 1 મિનિટ પછી ફરી રિફ્રેશ કરો.")
+                st.warning("પૂરતો ડેટા મળ્યો નથી, કૃપા કરીને થોડીવાર પછી રીફ્રેશ કરો.")
         else:
-            st.error("ડેટા મેળવવામાં મુશ્કેલી આવી રહી છે. થોડી સેકન્ડ પછી પેજ રિફ્રેશ કરો.")
+            st.error("ડેટા ફેચિંગમાં સમસ્યા છે, કૃપા કરીને પેજ રીફ્રેશ કરો.")
