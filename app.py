@@ -1,47 +1,76 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import numpy as np
+import os
 import datetime
 import pytz
+import numpy as np
+import pandas as pd
+import streamlit as st
+import yfinance as yf
 
 st.set_page_config(page_title="ETF Momentum Scanner", layout="wide")
 
 st.markdown("""
     <h2 style='text-align: center; color: #1E88E5;'>📊 ETF Momentum & RS Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px;'>ScreeningMantis Style Live Dashboard</p>
+    <p style='text-align: center; color: gray; font-size: 14px;'>Professional Live Momentum & Relative Strength Dashboard</p>
 """, unsafe_allow_html=True)
 
+CONFIG_FILE = "etf_list.txt"
 DEFAULT_ETFS = [
     "PHARMABEES", "HDFCSML250", "METALIETF", "GOLDBEES",
     "MODEFENCE", "JUNIORBEES", "MID150BEES", "SILVERBEES",
     "MOM30IETF", "COMMOIETF", "ITBEES", "VAL30IETF",
     "CPSEETF", "FMCGIETF", "NV20IETF"
 ]
+BENCHMARK_SYMBOL = "^CRSLDX"  # Nifty 500
 
-BENCHMARK_SYMBOL = "^CRSLDX" # Nifty 500
+# Persistent storage helpers
+def load_saved_etfs():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                lines = [line.strip().upper() for line in f.readlines() if line.strip()]
+            if lines:
+                return lines
+        except Exception:
+            pass
+    return list(DEFAULT_ETFS)
 
-st.sidebar.header("⚙️ ETF મેનેજર")
+def save_etfs(etf_list):
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            for item in etf_list:
+                f.write(f"{item}\n")
+    except Exception:
+        pass
 
 if "etf_pool" not in st.session_state:
-    st.session_state.etf_pool = list(DEFAULT_ETFS)
+    st.session_state.etf_pool = load_saved_etfs()
 
-new_etf_input = st.sidebar.text_input("➕ નવો ETF ઉમેરો (દા.ત. BANKBEES):").strip().upper()
+# Sidebar: ETF Management
+st.sidebar.header("⚙️ ETF Manager")
+
+new_etf_input = st.sidebar.text_input("➕ Add New ETF (e.g. AUTOIETF):").strip().upper()
 if new_etf_input:
     clean_sym = new_etf_input.replace(".NS", "").strip()
     if clean_sym and clean_sym not in st.session_state.etf_pool:
         st.session_state.etf_pool.append(clean_sym)
-        st.sidebar.success(f"{clean_sym} ઉમેરાઈ ગયો!")
+        save_etfs(st.session_state.etf_pool)
+        st.sidebar.success(f"{clean_sym} added successfully!")
 
 selected_tickers = st.sidebar.multiselect(
-    "📋 સક્રિય ETF (કાઢવા માટે × દબાવો):",
+    "📋 Active ETFs (Click × to remove):",
     options=st.session_state.etf_pool,
     default=st.session_state.etf_pool
 )
 
-use_rs_filter = st.sidebar.checkbox("Nifty 500 Mansfield RS ગણવું?", value=True)
-refresh = st.sidebar.button("🔄 Data Refresh")
+# Auto-save changes when an ETF is removed from multiselect
+if set(selected_tickers) != set(st.session_state.etf_pool):
+    st.session_state.etf_pool = list(selected_tickers)
+    save_etfs(st.session_state.etf_pool)
 
+use_rs_filter = st.sidebar.checkbox("Include Nifty 500 Mansfield RS Filter", value=True)
+refresh = st.sidebar.button("🔄 Refresh Data")
+
+# Wilder's RMA RSI formula
 def get_tv_wilder_rsi(series, period=14):
     clean_s = series.dropna()
     if len(clean_s) <= period + 1:
@@ -76,15 +105,15 @@ def fetch_safe_data(ticker_list):
     return raw, weekly
 
 if not selected_tickers:
-    st.warning("⚠️ કૃપા કરીને સાઇડબારમાંથી ઓછામાં ઓછો એક ETF પસંદ કરો.")
+    st.warning("Please select at least one ETF from the sidebar.")
 else:
-    with st.spinner("લાઈવ માર્કેટ ડેટા સ્કેન થઈ રહ્યો છે..."):
+    with st.spinner("Fetching market data..."):
         raw_daily, df_weekly = fetch_safe_data(selected_tickers)
 
         if df_weekly is not None and not df_weekly.empty and BENCHMARK_SYMBOL in df_weekly.columns:
             bench_series = df_weekly[BENCHMARK_SYMBOL].dropna()
 
-            # Gold અને Silver માટે Mansfield RS રેશિયો
+            # Dynamic Silver vs Gold calculation
             has_gold = "GOLDBEES.NS" in df_weekly.columns and len(df_weekly["GOLDBEES.NS"].dropna()) >= 55
             has_silver = "SILVERBEES.NS" in df_weekly.columns and len(df_weekly["SILVERBEES.NS"].dropna()) >= 55
             silver_vs_gold_mrs = 0.0
@@ -117,9 +146,11 @@ else:
                     rsi = float(rsi_series.iloc[-1])
 
                     daily_s = raw_daily[sym].dropna()
-                    if daily_s.empty:
+                    if len(daily_s) < 2:
                         continue
                     ltp = float(daily_s.iloc[-1])
+                    prev_close = float(daily_s.iloc[-2])
+                    daily_change_pct = ((ltp - prev_close) / prev_close) * 100.0
 
                     above_ema = ltp > ema20
                     rsi_bull = rsi > 60.0
@@ -128,7 +159,7 @@ else:
                     is_silver = (ticker == "SILVERBEES")
                     is_commodity = is_gold or is_silver
 
-                    # --- Mansfield RS લોજિક ---
+                    # Mansfield RS Evaluation
                     if is_silver:
                         mrs_val = silver_vs_gold_mrs
                         if silver_vs_gold_mrs > 0:
@@ -159,6 +190,7 @@ else:
                         'ETF': ticker,
                         'Type': "Commodity" if is_commodity else "Equity",
                         'LTP': round(ltp, 2),
+                        'Change (%)': round(daily_change_pct, 2),
                         'EMA 20': round(ema20, 2),
                         'RSI': round(rsi, 2),
                         'Mansfield RS': mrs_display,
@@ -199,6 +231,11 @@ else:
                     elif val <= 50: return 'background-color: #FFCDD2; color: black;'
                     return ''
 
+                def highlight_change(val):
+                    if val > 0: return 'color: #2E7D32; font-weight: bold;'
+                    elif val < 0: return 'color: #C62828; font-weight: bold;'
+                    return 'color: gray;'
+
                 def highlight_mrs(val):
                     val_str = str(val)
                     if "Bullish" in val_str:
@@ -217,13 +254,19 @@ else:
                         pass
                     return ''
 
-                view_df = df[['Rank', 'ETF', 'Type', 'LTP', 'EMA 20', 'RSI', 'Mansfield RS', 'Signal']]
+                view_df = df[['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', 'EMA 20', 'RSI', 'Mansfield RS', 'Signal']]
                 styled_df = view_df.style.map(highlight_rsi, subset=['RSI'])\
+                                         .map(highlight_change, subset=['Change (%)'])\
                                          .map(highlight_mrs, subset=['Mansfield RS'])\
-                                         .format({'LTP': '₹{:.2f}', 'EMA 20': '₹{:.2f}', 'RSI': '{:.2f}'})
+                                         .format({
+                                             'LTP': '₹{:.2f}',
+                                             'Change (%)': '{:+.2f}%',
+                                             'EMA 20': '₹{:.2f}',
+                                             'RSI': '{:.2f}'
+                                         })
 
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
             else:
-                st.warning("હાલ માર્કેટ ડેટા અપડેટ થઈ રહ્યો છે, કૃપા કરીને 1 મિનિટ પછી ફરી રિફ્રેશ કરો.")
+                st.warning("Market data is currently updating. Please refresh in a moment.")
         else:
-            st.error("ડેટા ફેચિંગમાં સમસ્યા છે, કૃપા કરીને થોડીવાર પછી ફરીથી પ્રયાસ કરો.")
+            st.error("Failed to fetch data from Yahoo Finance. Please refresh.")
