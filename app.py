@@ -14,6 +14,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 CONFIG_FILE = "etf_list.txt"
+
+# તમારો સિક્રેટ એડમિન પિન (અહીં તમે ગમે તે પાસવર્ડ રાખી શકો છો)
+ADMIN_PIN = "120120"
+
 DEFAULT_ETFS = [
     "PHARMABEES", "HDFCSML250", "METALIETF", "GOLDBEES",
     "MODEFENCE", "JUNIORBEES", "MID150BEES", "SILVERBEES",
@@ -45,30 +49,45 @@ def save_etfs(etf_list):
 if "etf_pool" not in st.session_state:
     st.session_state.etf_pool = load_saved_etfs()
 
-# Sidebar: ETF Management
-st.sidebar.header("⚙️ ETF Manager")
-
-new_etf_input = st.sidebar.text_input("➕ Add New ETF (e.g. AUTOIETF):").strip().upper()
-if new_etf_input:
-    clean_sym = new_etf_input.replace(".NS", "").strip()
-    if clean_sym and clean_sym not in st.session_state.etf_pool:
-        st.session_state.etf_pool.append(clean_sym)
-        save_etfs(st.session_state.etf_pool)
-        st.sidebar.success(f"{clean_sym} added successfully!")
-
-selected_tickers = st.sidebar.multiselect(
-    "📋 Active ETFs (Click × to remove):",
-    options=st.session_state.etf_pool,
-    default=st.session_state.etf_pool
-)
-
-# Auto-save changes when an ETF is removed from multiselect
-if set(selected_tickers) != set(st.session_state.etf_pool):
-    st.session_state.etf_pool = list(selected_tickers)
-    save_etfs(st.session_state.etf_pool)
+# --- સાઇડબાર સેટિંગ્સ ---
+st.sidebar.header("⚙️ Scanner Settings")
 
 use_rs_filter = st.sidebar.checkbox("Include Nifty 500 Mansfield RS Filter", value=True)
 refresh = st.sidebar.button("🔄 Refresh Data")
+
+# --- એડમિન લોક સિસ્ટમ ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔒 Manage ETF Basket")
+
+admin_pass = st.sidebar.text_input("Enter Admin PIN to edit list:", type="password")
+is_admin = (admin_pass == ADMIN_PIN)
+
+if is_admin:
+    st.sidebar.success("🔓 Admin Mode Active")
+    new_etf_input = st.sidebar.text_input("➕ Add New ETF (e.g. AUTOIETF):").strip().upper()
+    if new_etf_input:
+        clean_sym = new_etf_input.replace(".NS", "").strip()
+        if clean_sym and clean_sym not in st.session_state.etf_pool:
+            st.session_state.etf_pool.append(clean_sym)
+            save_etfs(st.session_state.etf_pool)
+            st.sidebar.success(f"{clean_sym} added permanently!")
+
+    selected_tickers = st.sidebar.multiselect(
+        "📋 Active Basket (Click × to remove):",
+        options=st.session_state.etf_pool,
+        default=st.session_state.etf_pool
+    )
+
+    # માત્ર એડમિન મોડમાં જ ડિલીટ કરેલા ફેરફાર સેવ થશે
+    if set(selected_tickers) != set(st.session_state.etf_pool):
+        st.session_state.etf_pool = list(selected_tickers)
+        save_etfs(st.session_state.etf_pool)
+else:
+    if admin_pass:
+        st.sidebar.error("Incorrect PIN")
+    st.sidebar.info("👀 View-Only Mode: Locked by Admin. Enter PIN above to add/remove ETFs.")
+    # સામાન્ય યુઝર માટે ફિક્સ લિસ્ટ રહેશે
+    selected_tickers = list(st.session_state.etf_pool)
 
 # Wilder's RMA RSI formula
 def get_tv_wilder_rsi(series, period=14):
@@ -105,7 +124,7 @@ def fetch_safe_data(ticker_list):
     return raw, weekly
 
 if not selected_tickers:
-    st.warning("Please select at least one ETF from the sidebar.")
+    st.warning("No ETFs available in the basket.")
 else:
     with st.spinner("Fetching market data..."):
         raw_daily, df_weekly = fetch_safe_data(selected_tickers)
