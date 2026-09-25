@@ -1,6 +1,8 @@
 import os
 import datetime
 import pytz
+import json
+import urllib.request
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -46,7 +48,7 @@ def save_etfs(etf_list):
 if "etf_pool" not in st.session_state:
     st.session_state.etf_pool = load_saved_etfs()
 
-# સાઇડબાર
+# Sidebar
 st.sidebar.header("⚙️ Scanner Settings")
 use_rs_filter = st.sidebar.checkbox("Include Nifty 500 Mansfield RS Filter", value=True)
 refresh = st.sidebar.button("🔄 Refresh Live Data")
@@ -99,7 +101,7 @@ def get_tv_wilder_rsi(series, period=14):
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
-# સાપ્તાહિક ડેટા (RSI, EMA 20, Mansfield RS માટે)
+# સાપ્તાહિક ડેટા (EMA, RSI અને Mansfield RS માટે)
 @st.cache_data(ttl=300)
 def fetch_weekly_data(ticker_list):
     if not ticker_list:
@@ -116,40 +118,43 @@ def fetch_weekly_data(ticker_list):
     weekly = raw.resample('W-FRI').last().ffill()
     return weekly
 
-# લાઈવ ભાવ અને ટકાવારી (કોઈ કેશ વગર, તાજો ડેટા)
-def fetch_live_prices(ticker_list):
-    symbols = [f"{t}.NS" for t in ticker_list]
-    # તાજેતરના દિવસોનો ડેઇલી ડેટા મેળવવો
-    df_recent = yf.download(symbols, period="5d", interval="1d", auto_adjust=False, progress=False)
-    prices = {}
-    if df_recent.empty:
-        return prices
-
-    if isinstance(df_recent.columns, pd.MultiIndex):
-        close_df = df_recent['Close'].copy() if 'Close' in df_recent.columns.levels[0] else df_recent.xs('Close', axis=1, level=0, drop_level=True).copy()
-    else:
-        close_df = df_recent['Close'].copy() if 'Close' in df_recent else df_recent.copy()
-
+# લાઈવ ભાવ અને આજના દિવસનો % ફેરફાર (Yahoo API થી ડાયરેક્ટ)
+def fetch_realtime_quotes(ticker_list):
+    quotes = {}
     for ticker in ticker_list:
         sym = f"{ticker}.NS"
-        if sym in close_df.columns:
-            s = close_df[sym].dropna()
-            if len(s) >= 2:
-                ltp = float(s.iloc[-1])
-                prev_close = float(s.iloc[-2])
-                chg_pct = ((ltp - prev_close) / prev_close) * 100.0
-                prices[ticker] = (ltp, chg_pct)
-            elif len(s) == 1:
-                ltp = float(s.iloc[-1])
-                prices[ticker] = (ltp, 0.0)
-    return prices
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1m&range=1d"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode())
+                meta = data['chart']['result'][0]['meta']
+                ltp = float(meta.get('regularMarketPrice', 0.0))
+                prev_close = float(meta.get('chartPreviousClose', 0.0))
+                if prev_close > 0:
+                    change_pct = ((ltp - prev_close) / prev_close) * 100.0
+                else:
+                    change_pct = 0.0
+                quotes[ticker] = (ltp, change_pct)
+        except Exception:
+            # બેકઅપ વિકલ્પ જો નેટવર્ક સ્લો હોય
+            try:
+                t = yf.Ticker(sym)
+                info = t.fast_info
+                ltp = float(info['lastPrice'])
+                prev_close = float(info['previousClose'])
+                change_pct = ((ltp - prev_close) / prev_close) * 100.0 if prev_close > 0 else 0.0
+                quotes[ticker] = (ltp, change_pct)
+            except Exception:
+                quotes[ticker] = (None, 0.0)
+    return quotes
 
 if not selected_tickers:
     st.warning("No ETFs available in the basket.")
 else:
-    with st.spinner("Fetching market data..."):
+    with st.spinner("Fetching live market data..."):
         df_weekly = fetch_weekly_data(selected_tickers)
-        live_prices = fetch_live_prices(selected_tickers)
+        live_quotes = fetch_realtime_quotes(selected_tickers)
 
         if df_weekly is not None and not df_weekly.empty and BENCHMARK_SYMBOL in df_weekly.columns:
             bench_series = df_weekly[BENCHMARK_SYMBOL].dropna()
@@ -171,7 +176,7 @@ else:
 
             for ticker in selected_tickers:
                 sym = f"{ticker}.NS"
-                if sym not in df_weekly.columns or ticker not in live_prices:
+                if sym not in df_weekly.columns:
                     continue
 
                 series = df_weekly[sym].dropna()
@@ -185,7 +190,10 @@ else:
                         continue
                     rsi = float(rsi_series.iloc[-1])
 
-                    ltp, daily_change_pct = live_prices[ticker]
+                    ltp, daily_change_pct = live_quotes.get(ticker, (None, 0.0))
+                    if ltp is None or ltp == 0.0:
+                        # Fallback to weekly last close if API fails
+                        ltp = float(series.iloc[-1])
 
                     above_ema = ltp > ema20
                     rsi_bull = rsi > 60.0
