@@ -10,12 +10,10 @@ st.set_page_config(page_title="ETF Momentum Scanner", layout="wide")
 
 st.markdown("""
     <h2 style='text-align: center; color: #1E88E5;'>📊 ETF Momentum & RS Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px;'>Live Momentum Dashboard</p>
+    <p style='text-align: center; color: gray; font-size: 14px;'>Live Momentum & Relative Strength Dashboard</p>
 """, unsafe_allow_html=True)
 
 CONFIG_FILE = "etf_list.txt"
-
-# તમારો સિક્રેટ એડમિન પિન (અહીં તમે ગમે તે પાસવર્ડ રાખી શકો છો)
 ADMIN_PIN = "120120"
 
 DEFAULT_ETFS = [
@@ -26,7 +24,6 @@ DEFAULT_ETFS = [
 ]
 BENCHMARK_SYMBOL = "^CRSLDX"  # Nifty 500
 
-# Persistent storage helpers
 def load_saved_etfs():
     if os.path.exists(CONFIG_FILE):
         try:
@@ -49,13 +46,10 @@ def save_etfs(etf_list):
 if "etf_pool" not in st.session_state:
     st.session_state.etf_pool = load_saved_etfs()
 
-# --- સાઇડબાર સેટિંગ્સ ---
 st.sidebar.header("⚙️ Scanner Settings")
-
 use_rs_filter = st.sidebar.checkbox("Include Nifty 500 Mansfield RS Filter", value=True)
 refresh = st.sidebar.button("🔄 Refresh Data")
 
-# --- એડમિન લોક સિસ્ટમ ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔒 Manage ETF Basket")
 
@@ -78,7 +72,6 @@ if is_admin:
         default=st.session_state.etf_pool
     )
 
-    # માત્ર એડમિન મોડમાં જ ડિલીટ કરેલા ફેરફાર સેવ થશે
     if set(selected_tickers) != set(st.session_state.etf_pool):
         st.session_state.etf_pool = list(selected_tickers)
         save_etfs(st.session_state.etf_pool)
@@ -86,10 +79,8 @@ else:
     if admin_pass:
         st.sidebar.error("Incorrect PIN")
     st.sidebar.info("👀 View-Only Mode: Locked by Admin. Enter PIN above to add/remove ETFs.")
-    # સામાન્ય યુઝર માટે ફિક્સ લિસ્ટ રહેશે
     selected_tickers = list(st.session_state.etf_pool)
 
-# Wilder's RMA RSI formula
 def get_tv_wilder_rsi(series, period=14):
     clean_s = series.dropna()
     if len(clean_s) <= period + 1:
@@ -107,32 +98,63 @@ def get_tv_wilder_rsi(series, period=14):
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
+# ઐતિહાસિક સાપ્તાહિક ડેટા ફેચિંગ
 @st.cache_data(ttl=120)
 def fetch_safe_data(ticker_list):
     if not ticker_list:
-        return None, None
+        return None
     symbols = list(set([f"{t}.NS" for t in ticker_list] + [BENCHMARK_SYMBOL, "GOLDBEES.NS", "SILVERBEES.NS"]))
     df = yf.download(symbols, period="5y", interval="1d", auto_adjust=False, progress=False)
     if df.empty:
-        return None, None
+        return None
     if isinstance(df.columns, pd.MultiIndex):
         raw = df['Close'].copy() if 'Close' in df.columns.levels[0] else df.xs('Close', axis=1, level=0, drop_level=True).copy()
     else:
         raw = df['Close'].copy() if 'Close' in df else df.copy()
     raw = raw.ffill()
     weekly = raw.resample('W-FRI').last().ffill()
-    return raw, weekly
+    return weekly
+
+# લાઈવ ભાવ અને ગઈકાલનો બંધ ભાવ લેવા માટેનું ફંક્શન
+@st.cache_data(ttl=60)
+def get_live_price_and_change(ticker):
+    try:
+        t = yf.Ticker(f"{ticker}.NS")
+        info = t.fast_info
+        ltp = float(info['lastPrice'])
+        prev_close = float(info['previousClose'])
+        change_pct = ((ltp - prev_close) / prev_close) * 100.0
+        return ltp, change_pct
+    except Exception:
+        return None, 0.0
+
+def format_ema_battery(ema_val, ltp):
+    dist_pct = ((ltp - ema_val) / ema_val) * 100.0
+    if dist_pct >= 8.0:
+        bar = "▰▰▰▰"
+    elif dist_pct >= 5.0:
+        bar = "▰▰▰▱"
+    elif dist_pct >= 2.0:
+        bar = "▰▰▱▱"
+    elif dist_pct >= 0.0:
+        bar = "▰▱▱▱"
+    elif dist_pct >= -2.0:
+        bar = "▱▱▱▰"
+    elif dist_pct >= -5.0:
+        bar = "▱▱▰▰"
+    else:
+        bar = "▰▰▰▰"
+    return f"₹{ema_val:.2f}  {bar} ({dist_pct:+.1f}%)", dist_pct
 
 if not selected_tickers:
     st.warning("No ETFs available in the basket.")
 else:
-    with st.spinner("Fetching market data..."):
-        raw_daily, df_weekly = fetch_safe_data(selected_tickers)
+    with st.spinner("Fetching live market data..."):
+        df_weekly = fetch_safe_data(selected_tickers)
 
         if df_weekly is not None and not df_weekly.empty and BENCHMARK_SYMBOL in df_weekly.columns:
             bench_series = df_weekly[BENCHMARK_SYMBOL].dropna()
 
-            # Dynamic Silver vs Gold calculation
             has_gold = "GOLDBEES.NS" in df_weekly.columns and len(df_weekly["GOLDBEES.NS"].dropna()) >= 55
             has_silver = "SILVERBEES.NS" in df_weekly.columns and len(df_weekly["SILVERBEES.NS"].dropna()) >= 55
             silver_vs_gold_mrs = 0.0
@@ -164,21 +186,20 @@ else:
                         continue
                     rsi = float(rsi_series.iloc[-1])
 
-                    daily_s = raw_daily[sym].dropna()
-                    if len(daily_s) < 2:
+                    # લાઈવ ભાવ અને આજના જ દિવસનો સચોટ % Change
+                    ltp, daily_change_pct = get_live_price_and_change(ticker)
+                    if ltp is None:
                         continue
-                    ltp = float(daily_s.iloc[-1])
-                    prev_close = float(daily_s.iloc[-2])
-                    daily_change_pct = ((ltp - prev_close) / prev_close) * 100.0
 
                     above_ema = ltp > ema20
                     rsi_bull = rsi > 60.0
+
+                    ema_display, dist_pct = format_ema_battery(ema20, ltp)
 
                     is_gold = (ticker == "GOLDBEES")
                     is_silver = (ticker == "SILVERBEES")
                     is_commodity = is_gold or is_silver
 
-                    # Mansfield RS Evaluation
                     if is_silver:
                         mrs_val = silver_vs_gold_mrs
                         if silver_vs_gold_mrs > 0:
@@ -210,7 +231,8 @@ else:
                         'Type': "Commodity" if is_commodity else "Equity",
                         'LTP': round(ltp, 2),
                         'Change (%)': round(daily_change_pct, 2),
-                        'EMA 20': round(ema20, 2),
+                        'EMA 20': ema_display,
+                        'dist_pct': dist_pct,
                         'RSI': round(rsi, 2),
                         'Mansfield RS': mrs_display,
                         'mrs_val': mrs_val,
@@ -255,6 +277,13 @@ else:
                     elif val < 0: return 'color: #C62828; font-weight: bold;'
                     return 'color: gray;'
 
+                def highlight_ema(val):
+                    if "(+" in str(val):
+                        return 'color: #2E7D32; font-weight: bold;'
+                    elif "(-" in str(val):
+                        return 'color: #C62828; font-weight: bold;'
+                    return ''
+
                 def highlight_mrs(val):
                     val_str = str(val)
                     if "Bullish" in val_str:
@@ -276,11 +305,11 @@ else:
                 view_df = df[['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', 'EMA 20', 'RSI', 'Mansfield RS', 'Signal']]
                 styled_df = view_df.style.map(highlight_rsi, subset=['RSI'])\
                                          .map(highlight_change, subset=['Change (%)'])\
+                                         .map(highlight_ema, subset=['EMA 20'])\
                                          .map(highlight_mrs, subset=['Mansfield RS'])\
                                          .format({
                                              'LTP': '₹{:.2f}',
                                              'Change (%)': '{:+.2f}%',
-                                             'EMA 20': '₹{:.2f}',
                                              'RSI': '{:.2f}'
                                          })
 
@@ -289,3 +318,4 @@ else:
                 st.warning("Market data is currently updating. Please refresh in a moment.")
         else:
             st.error("Failed to fetch data from Yahoo Finance. Please refresh.")
+            
