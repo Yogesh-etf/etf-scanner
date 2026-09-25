@@ -46,9 +46,10 @@ def save_etfs(etf_list):
 if "etf_pool" not in st.session_state:
     st.session_state.etf_pool = load_saved_etfs()
 
+# સાઇડબાર
 st.sidebar.header("⚙️ Scanner Settings")
 use_rs_filter = st.sidebar.checkbox("Include Nifty 500 Mansfield RS Filter", value=True)
-refresh = st.sidebar.button("🔄 Refresh Data")
+refresh = st.sidebar.button("🔄 Refresh Live Data")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔒 Manage ETF Basket")
@@ -98,9 +99,9 @@ def get_tv_wilder_rsi(series, period=14):
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
-# ઐતિહાસિક સાપ્તાહિક ડેટા ફેચિંગ
-@st.cache_data(ttl=120)
-def fetch_safe_data(ticker_list):
+# સાપ્તાહિક ડેટા (RSI, EMA 20, Mansfield RS માટે)
+@st.cache_data(ttl=300)
+def fetch_weekly_data(ticker_list):
     if not ticker_list:
         return None
     symbols = list(set([f"{t}.NS" for t in ticker_list] + [BENCHMARK_SYMBOL, "GOLDBEES.NS", "SILVERBEES.NS"]))
@@ -115,42 +116,40 @@ def fetch_safe_data(ticker_list):
     weekly = raw.resample('W-FRI').last().ffill()
     return weekly
 
-# લાઈવ ભાવ અને ગઈકાલનો બંધ ભાવ લેવા માટેનું ફંક્શન
-@st.cache_data(ttl=60)
-def get_live_price_and_change(ticker):
-    try:
-        t = yf.Ticker(f"{ticker}.NS")
-        info = t.fast_info
-        ltp = float(info['lastPrice'])
-        prev_close = float(info['previousClose'])
-        change_pct = ((ltp - prev_close) / prev_close) * 100.0
-        return ltp, change_pct
-    except Exception:
-        return None, 0.0
+# લાઈવ ભાવ અને ટકાવારી (કોઈ કેશ વગર, તાજો ડેટા)
+def fetch_live_prices(ticker_list):
+    symbols = [f"{t}.NS" for t in ticker_list]
+    # તાજેતરના દિવસોનો ડેઇલી ડેટા મેળવવો
+    df_recent = yf.download(symbols, period="5d", interval="1d", auto_adjust=False, progress=False)
+    prices = {}
+    if df_recent.empty:
+        return prices
 
-def format_ema_battery(ema_val, ltp):
-    dist_pct = ((ltp - ema_val) / ema_val) * 100.0
-    if dist_pct >= 8.0:
-        bar = "▰▰▰▰"
-    elif dist_pct >= 5.0:
-        bar = "▰▰▰▱"
-    elif dist_pct >= 2.0:
-        bar = "▰▰▱▱"
-    elif dist_pct >= 0.0:
-        bar = "▰▱▱▱"
-    elif dist_pct >= -2.0:
-        bar = "▱▱▱▰"
-    elif dist_pct >= -5.0:
-        bar = "▱▱▰▰"
+    if isinstance(df_recent.columns, pd.MultiIndex):
+        close_df = df_recent['Close'].copy() if 'Close' in df_recent.columns.levels[0] else df_recent.xs('Close', axis=1, level=0, drop_level=True).copy()
     else:
-        bar = "▰▰▰▰"
-    return f"₹{ema_val:.2f}  {bar} ({dist_pct:+.1f}%)", dist_pct
+        close_df = df_recent['Close'].copy() if 'Close' in df_recent else df_recent.copy()
+
+    for ticker in ticker_list:
+        sym = f"{ticker}.NS"
+        if sym in close_df.columns:
+            s = close_df[sym].dropna()
+            if len(s) >= 2:
+                ltp = float(s.iloc[-1])
+                prev_close = float(s.iloc[-2])
+                chg_pct = ((ltp - prev_close) / prev_close) * 100.0
+                prices[ticker] = (ltp, chg_pct)
+            elif len(s) == 1:
+                ltp = float(s.iloc[-1])
+                prices[ticker] = (ltp, 0.0)
+    return prices
 
 if not selected_tickers:
     st.warning("No ETFs available in the basket.")
 else:
-    with st.spinner("Fetching live market data..."):
-        df_weekly = fetch_safe_data(selected_tickers)
+    with st.spinner("Fetching market data..."):
+        df_weekly = fetch_weekly_data(selected_tickers)
+        live_prices = fetch_live_prices(selected_tickers)
 
         if df_weekly is not None and not df_weekly.empty and BENCHMARK_SYMBOL in df_weekly.columns:
             bench_series = df_weekly[BENCHMARK_SYMBOL].dropna()
@@ -172,7 +171,7 @@ else:
 
             for ticker in selected_tickers:
                 sym = f"{ticker}.NS"
-                if sym not in df_weekly.columns:
+                if sym not in df_weekly.columns or ticker not in live_prices:
                     continue
 
                 series = df_weekly[sym].dropna()
@@ -186,15 +185,10 @@ else:
                         continue
                     rsi = float(rsi_series.iloc[-1])
 
-                    # લાઈવ ભાવ અને આજના જ દિવસનો સચોટ % Change
-                    ltp, daily_change_pct = get_live_price_and_change(ticker)
-                    if ltp is None:
-                        continue
+                    ltp, daily_change_pct = live_prices[ticker]
 
                     above_ema = ltp > ema20
                     rsi_bull = rsi > 60.0
-
-                    ema_display, dist_pct = format_ema_battery(ema20, ltp)
 
                     is_gold = (ticker == "GOLDBEES")
                     is_silver = (ticker == "SILVERBEES")
@@ -231,8 +225,7 @@ else:
                         'Type': "Commodity" if is_commodity else "Equity",
                         'LTP': round(ltp, 2),
                         'Change (%)': round(daily_change_pct, 2),
-                        'EMA 20': ema_display,
-                        'dist_pct': dist_pct,
+                        'EMA 20': round(ema20, 2),
                         'RSI': round(rsi, 2),
                         'Mansfield RS': mrs_display,
                         'mrs_val': mrs_val,
@@ -277,13 +270,6 @@ else:
                     elif val < 0: return 'color: #C62828; font-weight: bold;'
                     return 'color: gray;'
 
-                def highlight_ema(val):
-                    if "(+" in str(val):
-                        return 'color: #2E7D32; font-weight: bold;'
-                    elif "(-" in str(val):
-                        return 'color: #C62828; font-weight: bold;'
-                    return ''
-
                 def highlight_mrs(val):
                     val_str = str(val)
                     if "Bullish" in val_str:
@@ -305,11 +291,11 @@ else:
                 view_df = df[['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', 'EMA 20', 'RSI', 'Mansfield RS', 'Signal']]
                 styled_df = view_df.style.map(highlight_rsi, subset=['RSI'])\
                                          .map(highlight_change, subset=['Change (%)'])\
-                                         .map(highlight_ema, subset=['EMA 20'])\
                                          .map(highlight_mrs, subset=['Mansfield RS'])\
                                          .format({
                                              'LTP': '₹{:.2f}',
                                              'Change (%)': '{:+.2f}%',
+                                             'EMA 20': '₹{:.2f}',
                                              'RSI': '{:.2f}'
                                          })
 
