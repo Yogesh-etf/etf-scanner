@@ -12,7 +12,7 @@ st.set_page_config(page_title="ETF Momentum Scanner", layout="wide")
 
 st.markdown("""
     <h2 style='text-align: center; color: #1E88E5;'>📊 ETF Momentum & RS Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px;'>Live Momentum & RS Dashboard (RSI 60-75 Entry Band)</p>
+    <p style='text-align: center; color: gray; font-size: 14px;'>Live Momentum & RS Dashboard</p>
 """, unsafe_allow_html=True)
 
 CONFIG_FILE = "etf_list.txt"
