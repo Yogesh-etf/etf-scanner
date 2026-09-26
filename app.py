@@ -12,7 +12,7 @@ st.set_page_config(page_title="ETF Momentum Scanner", layout="wide")
 
 st.markdown("""
     <h2 style='text-align: center; color: #1E88E5;'>📊 ETF Momentum & RS Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px;'>Live Momentum & Relative Strength Dashboard</p>
+    <p style='text-align: center; color: gray; font-size: 14px;'>Live Momentum & RS Dashboard (RSI 60-75 Entry Band)</p>
 """, unsafe_allow_html=True)
 
 CONFIG_FILE = "etf_list.txt"
@@ -48,7 +48,7 @@ def save_etfs(etf_list):
 if "etf_pool" not in st.session_state:
     st.session_state.etf_pool = load_saved_etfs()
 
-# Sidebar
+# Sidebar Settings
 st.sidebar.header("⚙️ Scanner Settings")
 use_rs_filter = st.sidebar.checkbox("Include Nifty 500 Mansfield RS Filter", value=True)
 refresh = st.sidebar.button("🔄 Refresh Live Data")
@@ -101,7 +101,7 @@ def get_tv_wilder_rsi(series, period=14):
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
-# સાપ્તાહિક ડેટા (EMA, RSI અને Mansfield RS માટે)
+# સાપ્તાહિક ડેટા ફેચિંગ (EMA, RSI અને RS માટે)
 @st.cache_data(ttl=300)
 def fetch_weekly_data(ticker_list):
     if not ticker_list:
@@ -118,7 +118,7 @@ def fetch_weekly_data(ticker_list):
     weekly = raw.resample('W-FRI').last().ffill()
     return weekly
 
-# લાઈવ ભાવ અને આજના દિવસનો % ફેરફાર (Yahoo API થી ડાયરેક્ટ)
+# લાઈવ માર્કેટ ડેટા (Yahoo Direct JSON API)
 def fetch_realtime_quotes(ticker_list):
     quotes = {}
     for ticker in ticker_list:
@@ -137,7 +137,6 @@ def fetch_realtime_quotes(ticker_list):
                     change_pct = 0.0
                 quotes[ticker] = (ltp, change_pct)
         except Exception:
-            # બેકઅપ વિકલ્પ જો નેટવર્ક સ્લો હોય
             try:
                 t = yf.Ticker(sym)
                 info = t.fast_info
@@ -192,11 +191,12 @@ else:
 
                     ltp, daily_change_pct = live_quotes.get(ticker, (None, 0.0))
                     if ltp is None or ltp == 0.0:
-                        # Fallback to weekly last close if API fails
                         ltp = float(series.iloc[-1])
 
                     above_ema = ltp > ema20
-                    rsi_bull = rsi > 60.0
+                    
+                    # --- RSI Sweet Spot Entry Filter (60 to 75) ---
+                    rsi_entry_band = (rsi >= 60.0) and (rsi <= 75.0)
 
                     is_gold = (ticker == "GOLDBEES")
                     is_silver = (ticker == "SILVERBEES")
@@ -226,7 +226,8 @@ else:
                         mrs_val = mrs
                         rs_cond = (mrs > 0.0) if use_rs_filter else True
 
-                    qualified = above_ema and rsi_bull and rs_cond
+                    # નવી એન્ટ્રી માટે ફક્ત RSI 60-75 જ ક્વોલિફાય થશે
+                    qualified_entry = above_ema and rsi_entry_band and rs_cond
 
                     data_rows.append({
                         'ETF': ticker,
@@ -238,7 +239,7 @@ else:
                         'Mansfield RS': mrs_display,
                         'mrs_val': mrs_val,
                         'above_ema': above_ema,
-                        'qualified': qualified
+                        'qualified_entry': qualified_entry
                     })
                 except Exception:
                     continue
@@ -250,12 +251,12 @@ else:
                 else:
                     df['score'] = df['RSI']
 
-                df = df.sort_values(by=['qualified', 'score', 'RSI'], ascending=[False, False, False]).reset_index(drop=True)
+                df = df.sort_values(by=['qualified_entry', 'score', 'RSI'], ascending=[False, False, False]).reset_index(drop=True)
                 df['Rank'] = range(1, len(df) + 1)
 
                 signals = []
                 for _, r in df.iterrows():
-                    if r['qualified'] and r['Rank'] <= 5:
+                    if r['qualified_entry'] and r['Rank'] <= 5:
                         signals.append("🟢 Entry")
                     elif r['above_ema']:
                         signals.append("🟡 Hold")
@@ -267,8 +268,8 @@ else:
                 st.caption(f"🕒 Last Updated (IST): {datetime.datetime.now(ist_tz).strftime('%d-%b-%Y %I:%M:%S %p')}")
 
                 def highlight_rsi(val):
-                    if val >= 65: return 'background-color: #2E7D32; color: white;'
-                    elif val >= 60: return 'background-color: #81C784; color: black;'
+                    if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;' # Sweet Spot
+                    elif val > 75: return 'background-color: #FFA726; color: black;'       # Extended / Hold only
                     elif val <= 40: return 'background-color: #C62828; color: white;'
                     elif val <= 50: return 'background-color: #FFCDD2; color: black;'
                     return ''
