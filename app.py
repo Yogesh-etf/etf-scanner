@@ -12,7 +12,7 @@ st.set_page_config(page_title="ETF Momentum Scanner", layout="wide")
 
 st.markdown("""
     <h2 style='text-align: center; color: #1E88E5;'>📊 ETF Momentum & RS Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px;'>Friday Rebalance Dashboard | 52W High & Action Tags</p>
+    <p style='text-align: center; color: gray; font-size: 14px;'>Friday Rebalance Dashboard</p>
 """, unsafe_allow_html=True)
 
 CONFIG_FILE = "etf_list.txt"
@@ -101,7 +101,7 @@ def get_tv_wilder_rsi(series, period=14):
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
-# સાપ્તાહિક ડેટા ફેચિંગ (EMA, RSI, 52W High અને RS માટે)
+# સાપ્તાહિક ડેટા ફેચિંગ
 @st.cache_data(ttl=300)
 def fetch_weekly_data(ticker_list):
     if not ticker_list:
@@ -239,9 +239,9 @@ else:
                         'Type': "Commodity" if is_commodity else "Equity",
                         'LTP': round(ltp, 2),
                         'Change (%)': round(daily_change_pct, 2),
+                        '52W High (%)': round(dist_52w_pct, 2),
                         'EMA 20': round(ema20, 2),
                         'buffer_ema_pct': buffer_ema_pct,
-                        '52W High (%)': round(dist_52w_pct, 2),
                         'RSI': round(rsi, 2),
                         'Mansfield RS': mrs_display,
                         'mrs_val': mrs_val,
@@ -278,8 +278,8 @@ else:
                 st.caption(f"🕒 Last Updated (IST): {datetime.datetime.now(ist_tz).strftime('%d-%b-%Y %I:%M:%S %p')}")
 
                 def highlight_rsi(val):
-                    if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;'
-                    elif val > 75: return 'background-color: #FFA726; color: black;'
+                    if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;' # Sweet Spot
+                    elif val > 75: return 'background-color: #FFA726; color: black;'       # Extended / Hold only
                     elif val <= 40: return 'background-color: #C62828; color: white;'
                     elif val <= 50: return 'background-color: #FFCDD2; color: black;'
                     return ''
@@ -293,6 +293,16 @@ else:
                     if val >= -3.0: return 'color: #2E7D32; font-weight: bold;'
                     elif val <= -12.0: return 'color: #C62828;'
                     return ''
+
+                # EMA 20 બેકગ્રાઉન્ડ કલર (LTP > EMA 20 હોય તો Green, LTP < EMA 20 હોય તો Red)
+                def highlight_ema_row(row):
+                    styles = [''] * len(row)
+                    ema_idx = row.index.get_loc('EMA 20')
+                    if row['LTP'] > row['EMA 20']:
+                        styles[ema_idx] = 'background-color: #2E7D32; color: white; font-weight: bold;'
+                    else:
+                        styles[ema_idx] = 'background-color: #C62828; color: white; font-weight: bold;'
+                    return styles
 
                 def highlight_mrs(val):
                     val_str = str(val)
@@ -312,16 +322,18 @@ else:
                         pass
                     return ''
 
-                view_df = df[['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', 'EMA 20', '52W High (%)', 'RSI', 'Mansfield RS', 'Friday Action']]
-                styled_df = view_df.style.map(highlight_rsi, subset=['RSI'])\
+                # કૉલમનો નવો ક્રમ: Change (%) પછી સીધું 52W High (%)
+                view_df = df[['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', '52W High (%)', 'EMA 20', 'RSI', 'Mansfield RS', 'Friday Action']]
+                styled_df = view_df.style.apply(highlight_ema_row, axis=1)\
+                                         .map(highlight_rsi, subset=['RSI'])\
                                          .map(highlight_change, subset=['Change (%)'])\
                                          .map(highlight_52w, subset=['52W High (%)'])\
                                          .map(highlight_mrs, subset=['Mansfield RS'])\
                                          .format({
                                              'LTP': '₹{:.2f}',
                                              'Change (%)': '{:+.2f}%',
-                                             'EMA 20': '₹{:.2f}',
                                              '52W High (%)': '{:+.2f}%',
+                                             'EMA 20': '₹{:.2f}',
                                              'RSI': '{:.2f}'
                                          })
 
@@ -330,3 +342,4 @@ else:
                 st.warning("Market data is currently updating. Please refresh in a moment.")
         else:
             st.error("Failed to fetch data from Yahoo Finance. Please refresh.")
+            
