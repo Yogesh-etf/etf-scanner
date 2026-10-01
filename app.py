@@ -1,10 +1,9 @@
-import os
 import datetime
-import pytz
 import json
 import urllib.request
 import numpy as np
 import pandas as pd
+import pytz
 import streamlit as st
 import yfinance as yf
 
@@ -15,9 +14,7 @@ st.markdown("""
     <p style='text-align: center; color: gray; font-size: 14px;'>Friday Rebalance Dashboard</p>
 """, unsafe_allow_html=True)
 
-CONFIG_FILE = "etf_list.txt"
-ADMIN_PIN = "120120"
-
+# તમારા કાયમી ETF લિસ્ટ મુજબ સેટ કરેલ
 DEFAULT_ETFS = [
     "PHARMABEES", "HDFCSML250", "METALIETF", "GOLDBEES",
     "MODEFENCE", "JUNIORBEES", "MIDCAPIETF", "SILVERBEES",
@@ -26,63 +23,13 @@ DEFAULT_ETFS = [
 ]
 BENCHMARK_SYMBOL = "^CRSLDX"  # Nifty 500
 
-def load_saved_etfs():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                lines = [line.strip().upper() for line in f.readlines() if line.strip()]
-            if lines:
-                return lines
-        except Exception:
-            pass
-    return list(DEFAULT_ETFS)
-
-def save_etfs(etf_list):
-    try:
-        with open(CONFIG_FILE, "w") as f:
-            for item in etf_list:
-                f.write(f"{item}\n")
-    except Exception:
-        pass
-
-if "etf_pool" not in st.session_state:
-    st.session_state.etf_pool = load_saved_etfs()
-
 # Sidebar Settings
 st.sidebar.header("⚙️ Scanner Settings")
 use_rs_filter = st.sidebar.checkbox("Include Nifty 500 Mansfield RS Filter", value=True)
+use_mom_filter = st.sidebar.checkbox("Include 6M/12M Momentum Filter & Score", value=True)
 refresh = st.sidebar.button("🔄 Refresh Live Data")
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔒 Manage ETF Basket")
-
-admin_pass = st.sidebar.text_input("Enter Admin PIN to edit list:", type="password")
-is_admin = (admin_pass == ADMIN_PIN)
-
-if is_admin:
-    st.sidebar.success("🔓 Admin Mode Active")
-    new_etf_input = st.sidebar.text_input("➕ Add New ETF (e.g. AUTOIETF):").strip().upper()
-    if new_etf_input:
-        clean_sym = new_etf_input.replace(".NS", "").strip()
-        if clean_sym and clean_sym not in st.session_state.etf_pool:
-            st.session_state.etf_pool.append(clean_sym)
-            save_etfs(st.session_state.etf_pool)
-            st.sidebar.success(f"{clean_sym} added permanently!")
-
-    selected_tickers = st.sidebar.multiselect(
-        "📋 Active Basket (Click × to remove):",
-        options=st.session_state.etf_pool,
-        default=st.session_state.etf_pool
-    )
-
-    if set(selected_tickers) != set(st.session_state.etf_pool):
-        st.session_state.etf_pool = list(selected_tickers)
-        save_etfs(st.session_state.etf_pool)
-else:
-    if admin_pass:
-        st.sidebar.error("Incorrect PIN")
-    st.sidebar.info("👀 View-Only Mode: Locked by Admin. Enter PIN above to add/remove ETFs.")
-    selected_tickers = list(st.session_state.etf_pool)
+selected_tickers = list(DEFAULT_ETFS)
 
 def get_tv_wilder_rsi(series, period=14):
     clean_s = series.dropna()
@@ -118,7 +65,7 @@ def fetch_weekly_data(ticker_list):
     weekly = raw.resample('W-FRI').last().ffill()
     return weekly
 
-# લાઈવ માર્કેટ ડેટા (Yahoo Direct JSON API)
+# લાઈવ માર્કેટ ડેટા (Direct Yahoo JSON API)
 def fetch_realtime_quotes(ticker_list):
     quotes = {}
     for ticker in ticker_list:
@@ -131,10 +78,7 @@ def fetch_realtime_quotes(ticker_list):
                 meta = data['chart']['result'][0]['meta']
                 ltp = float(meta.get('regularMarketPrice', 0.0))
                 prev_close = float(meta.get('chartPreviousClose', 0.0))
-                if prev_close > 0:
-                    change_pct = ((ltp - prev_close) / prev_close) * 100.0
-                else:
-                    change_pct = 0.0
+                change_pct = ((ltp - prev_close) / prev_close) * 100.0 if prev_close > 0 else 0.0
                 quotes[ticker] = (ltp, change_pct)
         except Exception:
             try:
@@ -193,13 +137,18 @@ else:
                     if ltp is None or ltp == 0.0:
                         ltp = float(series.iloc[-1])
 
-                    # 52-Week High Calculation
+                    # 52-Week High
                     high_52w = float(series.iloc[-52:].max())
                     if ltp > high_52w:
                         high_52w = ltp
                     dist_52w_pct = ((ltp - high_52w) / high_52w) * 100.0
 
-                    # Buffer from EMA 20
+                    # 6-Month (26W) & 12-Month (52W) Composite Momentum
+                    ret_26w = ((ltp - float(series.iloc[-26])) / float(series.iloc[-26])) * 100.0 if len(series) >= 26 else 0.0
+                    ret_52w = ((ltp - float(series.iloc[-52])) / float(series.iloc[-52])) * 100.0 if len(series) >= 52 else 0.0
+                    composite_mom = (ret_26w + ret_52w) / 2.0
+                    mom_display = f"{composite_mom:+.1f}% ({ret_26w:+.0f}/{ret_52w:+.0f})"
+
                     buffer_ema_pct = ((ltp - ema20) / ema20) * 100.0
                     above_ema = ltp > ema20
                     rsi_entry_band = (rsi >= 60.0) and (rsi <= 75.0)
@@ -232,7 +181,8 @@ else:
                         mrs_val = mrs
                         rs_cond = (mrs > 0.0) if use_rs_filter else True
 
-                    qualified_entry = above_ema and rsi_entry_band and rs_cond
+                    mom_cond = (composite_mom > 0.0) if use_mom_filter else True
+                    qualified_entry = above_ema and rsi_entry_band and rs_cond and mom_cond
 
                     data_rows.append({
                         'ETF': ticker,
@@ -245,6 +195,8 @@ else:
                         'RSI': round(rsi, 2),
                         'Mansfield RS': mrs_display,
                         'mrs_val': mrs_val,
+                        'Mom (6M/12M)': mom_display,
+                        'composite_mom': composite_mom,
                         'above_ema': above_ema,
                         'qualified_entry': qualified_entry
                     })
@@ -253,15 +205,17 @@ else:
 
             if data_rows:
                 df = pd.DataFrame(data_rows)
+
+                score_series = df['RSI'].copy()
                 if use_rs_filter:
-                    df['score'] = df['RSI'] + (df['mrs_val'] * 2.0)
-                else:
-                    df['score'] = df['RSI']
+                    score_series += (df['mrs_val'] * 2.0)
+                if use_mom_filter:
+                    score_series += (df['composite_mom'] * 0.5)
+                df['score'] = score_series
 
                 df = df.sort_values(by=['qualified_entry', 'score', 'RSI'], ascending=[False, False, False]).reset_index(drop=True)
                 df['Rank'] = range(1, len(df) + 1)
 
-                # Friday Action Tag Logic
                 actions = []
                 for _, r in df.iterrows():
                     if not r['above_ema']:
@@ -269,7 +223,7 @@ else:
                     elif r['qualified_entry'] and r['Rank'] <= 5:
                         actions.append("🟢 Fresh Buy")
                     elif r['buffer_ema_pct'] <= 2.0:
-                        actions.append("⚠️ Near Exit")
+                        actions.append("⚠️️ Near Exit")
                     else:
                         actions.append("🟡 Safe Hold")
                 df['Friday Action'] = actions
@@ -278,8 +232,8 @@ else:
                 st.caption(f"🕒 Last Updated (IST): {datetime.datetime.now(ist_tz).strftime('%d-%b-%Y %I:%M:%S %p')}")
 
                 def highlight_rsi(val):
-                    if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;' # Sweet Spot
-                    elif val > 75: return 'background-color: #FFA726; color: black;'       # Extended / Hold only
+                    if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;'
+                    elif val > 75: return 'background-color: #FFA726; color: black;'
                     elif val <= 40: return 'background-color: #C62828; color: white;'
                     elif val <= 50: return 'background-color: #FFCDD2; color: black;'
                     return ''
@@ -294,7 +248,6 @@ else:
                     elif val <= -12.0: return 'color: #C62828;'
                     return ''
 
-                # EMA 20 બેકગ્રાઉન્ડ કલર (LTP > EMA 20 હોય તો Green, LTP < EMA 20 હોય તો Red)
                 def highlight_ema_row(row):
                     styles = [''] * len(row)
                     ema_idx = row.index.get_loc('EMA 20')
@@ -322,24 +275,40 @@ else:
                         pass
                     return ''
 
-                # કૉલમનો નવો ક્રમ: Change (%) પછી સીધું 52W High (%)
-                view_df = df[['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', '52W High (%)', 'EMA 20', 'RSI', 'Mansfield RS', 'Friday Action']]
-                styled_df = view_df.style.apply(highlight_ema_row, axis=1)\
-                                         .map(highlight_rsi, subset=['RSI'])\
-                                         .map(highlight_change, subset=['Change (%)'])\
-                                         .map(highlight_52w, subset=['52W High (%)'])\
-                                         .map(highlight_mrs, subset=['Mansfield RS'])\
-                                         .format({
-                                             'LTP': '₹{:.2f}',
-                                             'Change (%)': '{:+.2f}%',
-                                             '52W High (%)': '{:+.2f}%',
-                                             'EMA 20': '₹{:.2f}',
-                                             'RSI': '{:.2f}'
-                                         })
+                def highlight_mom(val):
+                    val_str = str(val)
+                    if val_str.startswith("+"):
+                        return 'color: #2E7D32; font-weight: bold;'
+                    elif val_str.startswith("-"):
+                        return 'color: #C62828;'
+                    return ''
+
+                cols_to_show = ['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', '52W High (%)', 'EMA 20', 'RSI', 'Mansfield RS']
+                if use_mom_filter:
+                    cols_to_show.append('Mom (6M/12M)')
+                cols_to_show.append('Friday Action')
+
+                view_df = df[cols_to_show]
+                style_pipe = view_df.style.apply(highlight_ema_row, axis=1)\
+                                          .map(highlight_rsi, subset=['RSI'])\
+                                          .map(highlight_change, subset=['Change (%)'])\
+                                          .map(highlight_52w, subset=['52W High (%)'])\
+                                          .map(highlight_mrs, subset=['Mansfield RS'])
+                
+                if use_mom_filter:
+                    style_pipe = style_pipe.map(highlight_mom, subset=['Mom (6M/12M)'])
+
+                styled_df = style_pipe.format({
+                    'LTP': '₹{:.2f}',
+                    'Change (%)': '{:+.2f}%',
+                    '52W High (%)': '{:+.2f}%',
+                    'EMA 20': '₹{:.2f}',
+                    'RSI': '{:.2f}'
+                })
 
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
             else:
                 st.warning("Market data is currently updating. Please refresh in a moment.")
         else:
             st.error("Failed to fetch data from Yahoo Finance. Please refresh.")
-            
+                
