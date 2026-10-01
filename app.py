@@ -14,7 +14,7 @@ st.markdown("""
     <p style='text-align: center; color: gray; font-size: 14px;'>Friday Rebalance Dashboard</p>
 """, unsafe_allow_html=True)
 
-# તમારા કાયમી ETF લિસ્ટ મુજબ સેટ કરેલ
+# તમારું ફાઇનલ શોર્ટલિસ્ટ કરેલું બાસ્કેટ (૧૪ ETF)
 DEFAULT_ETFS = [
     "PHARMABEES", "HDFCSML250", "METALIETF", "GOLDBEES",
     "MODEFENCE", "JUNIORBEES", "MIDCAPIETF", "SILVERBEES",
@@ -143,11 +143,10 @@ else:
                         high_52w = ltp
                     dist_52w_pct = ((ltp - high_52w) / high_52w) * 100.0
 
-                    # 6-Month (26W) & 12-Month (52W) Composite Momentum
+                    # 6-Month (26W) & 12-Month (52W) Composite Momentum (નાનો સ્કોર)
                     ret_26w = ((ltp - float(series.iloc[-26])) / float(series.iloc[-26])) * 100.0 if len(series) >= 26 else 0.0
                     ret_52w = ((ltp - float(series.iloc[-52])) / float(series.iloc[-52])) * 100.0 if len(series) >= 52 else 0.0
                     composite_mom = (ret_26w + ret_52w) / 2.0
-                    mom_display = f"{composite_mom:+.1f}% ({ret_26w:+.0f}/{ret_52w:+.0f})"
 
                     buffer_ema_pct = ((ltp - ema20) / ema20) * 100.0
                     above_ema = ltp > ema20
@@ -195,8 +194,7 @@ else:
                         'RSI': round(rsi, 2),
                         'Mansfield RS': mrs_display,
                         'mrs_val': mrs_val,
-                        'Mom (6M/12M)': mom_display,
-                        'composite_mom': composite_mom,
+                        'Mom Score': round(composite_mom, 2),
                         'above_ema': above_ema,
                         'qualified_entry': qualified_entry
                     })
@@ -210,7 +208,7 @@ else:
                 if use_rs_filter:
                     score_series += (df['mrs_val'] * 2.0)
                 if use_mom_filter:
-                    score_series += (df['composite_mom'] * 0.5)
+                    score_series += (df['Mom Score'] * 0.5)
                 df['score'] = score_series
 
                 df = df.sort_values(by=['qualified_entry', 'score', 'RSI'], ascending=[False, False, False]).reset_index(drop=True)
@@ -223,7 +221,7 @@ else:
                     elif r['qualified_entry'] and r['Rank'] <= 5:
                         actions.append("🟢 Fresh Buy")
                     elif r['buffer_ema_pct'] <= 2.0:
-                        actions.append("⚠️️ Near Exit")
+                        actions.append("⚠️ Near Exit")
                     else:
                         actions.append("🟡 Safe Hold")
                 df['Friday Action'] = actions
@@ -232,8 +230,8 @@ else:
                 st.caption(f"🕒 Last Updated (IST): {datetime.datetime.now(ist_tz).strftime('%d-%b-%Y %I:%M:%S %p')}")
 
                 def highlight_rsi(val):
-                    if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;'
-                    elif val > 75: return 'background-color: #FFA726; color: black;'
+                    if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;' # Sweet Spot
+                    elif val > 75: return 'background-color: #FFA726; color: black;'       # Extended / Hold only
                     elif val <= 40: return 'background-color: #C62828; color: white;'
                     elif val <= 50: return 'background-color: #FFCDD2; color: black;'
                     return ''
@@ -275,17 +273,22 @@ else:
                         pass
                     return ''
 
-                def highlight_mom(val):
-                    val_str = str(val)
-                    if val_str.startswith("+"):
-                        return 'color: #2E7D32; font-weight: bold;'
-                    elif val_str.startswith("-"):
-                        return 'color: #C62828;'
-                    return ''
+                # મોમેન્ટમ સ્કોર બેકગ્રાઉન્ડ કલર (RSI અને EMA જેવો સ્પષ્ટ કલર)
+                def highlight_mom_score(val):
+                    try:
+                        f_val = float(val)
+                        if f_val >= 10.0:
+                            return 'background-color: #2E7D32; color: white; font-weight: bold;'
+                        elif f_val >= 0.0:
+                            return 'background-color: #81C784; color: black;'
+                        else:
+                            return 'background-color: #C62828; color: white; font-weight: bold;'
+                    except Exception:
+                        return ''
 
                 cols_to_show = ['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', '52W High (%)', 'EMA 20', 'RSI', 'Mansfield RS']
                 if use_mom_filter:
-                    cols_to_show.append('Mom (6M/12M)')
+                    cols_to_show.append('Mom Score')
                 cols_to_show.append('Friday Action')
 
                 view_df = df[cols_to_show]
@@ -296,19 +299,23 @@ else:
                                           .map(highlight_mrs, subset=['Mansfield RS'])
                 
                 if use_mom_filter:
-                    style_pipe = style_pipe.map(highlight_mom, subset=['Mom (6M/12M)'])
+                    style_pipe = style_pipe.map(highlight_mom_score, subset=['Mom Score'])
 
-                styled_df = style_pipe.format({
+                format_dict = {
                     'LTP': '₹{:.2f}',
                     'Change (%)': '{:+.2f}%',
                     '52W High (%)': '{:+.2f}%',
                     'EMA 20': '₹{:.2f}',
                     'RSI': '{:.2f}'
-                })
+                }
+                if use_mom_filter:
+                    format_dict['Mom Score'] = '{:+.1f}%'
+
+                styled_df = style_pipe.format(format_dict)
 
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
             else:
                 st.warning("Market data is currently updating. Please refresh in a moment.")
         else:
             st.error("Failed to fetch data from Yahoo Finance. Please refresh.")
-                
+            
