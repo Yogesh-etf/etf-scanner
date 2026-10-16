@@ -11,10 +11,9 @@ st.set_page_config(page_title="ETF Momentum Scanner", layout="wide")
 
 st.markdown("""
     <h2 style='text-align: center; color: #1E88E5;'>📊 ETF Momentum & RS Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px;'>Friday Rebalance Dashboard</p>
+    <p style='text-align: center; color: gray; font-size: 14px;'>Friday Rebalance Dashboard | 52W High, Vol-Adjusted Momentum (1-100) & Action Tags</p>
 """, unsafe_allow_html=True)
 
-# તમારું ફાઇનલ શોર્ટલિસ્ટ કરેલું બાસ્કેટ (૧૪ ETF)
 DEFAULT_ETFS = [
     "PHARMABEES", "HDFCSML250", "METALIETF", "GOLDBEES",
     "MODEFENCE", "JUNIORBEES", "MIDCAPIETF", "SILVERBEES",
@@ -23,7 +22,6 @@ DEFAULT_ETFS = [
 ]
 BENCHMARK_SYMBOL = "^CRSLDX"  # Nifty 500
 
-# Sidebar Settings
 st.sidebar.header("⚙️ Scanner Settings")
 use_rs_filter = st.sidebar.checkbox("Include Nifty 500 Mansfield RS Filter", value=True)
 use_mom_filter = st.sidebar.checkbox("Include 6M/12M Momentum Filter & Score", value=True)
@@ -31,26 +29,25 @@ refresh = st.sidebar.button("🔄 Refresh Live Data")
 
 selected_tickers = list(DEFAULT_ETFS)
 
-def get_tv_wilder_rsi(series, period=14):
-    clean_s = series.dropna()
-    if len(clean_s) <= period + 1:
-        return pd.Series(index=series.index, data=np.nan)
-    delta = clean_s.diff()
+def calculate_tradingview_rsi(series, period=14):
+    series = series.dropna()
+    if len(series) <= period + 1:
+        return np.nan
+    delta = series.diff()
     gain = delta.clip(lower=0.0)
     loss = -delta.clip(upper=0.0)
-    avg_gain = pd.Series(index=clean_s.index, dtype=float)
-    avg_loss = pd.Series(index=clean_s.index, dtype=float)
-    avg_gain.iloc[period] = gain.iloc[1:period+1].mean()
-    avg_loss.iloc[period] = loss.iloc[1:period+1].mean()
-    for i in range(period + 1, len(clean_s)):
-        avg_gain.iloc[i] = (avg_gain.iloc[i-1] * (period - 1) + gain.iloc[i]) / period
-        avg_loss.iloc[i] = (avg_loss.iloc[i-1] * (period - 1) + loss.iloc[i]) / period
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    avg_gain = gain.iloc[1:period+1].mean()
+    avg_loss = loss.iloc[1:period+1].mean()
+    for i in range(period + 1, len(series)):
+        avg_gain = (avg_gain * (period - 1) + gain.iloc[i]) / period
+        avg_loss = (avg_loss * (period - 1) + loss.iloc[i]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
 
-# સાપ્તાહિક ડેટા ફેચિંગ
 @st.cache_data(ttl=300)
-def fetch_weekly_data(ticker_list):
+def fetch_daily_data(ticker_list):
     if not ticker_list:
         return None
     symbols = list(set([f"{t}.NS" for t in ticker_list] + [BENCHMARK_SYMBOL, "GOLDBEES.NS", "SILVERBEES.NS"]))
@@ -61,11 +58,8 @@ def fetch_weekly_data(ticker_list):
         raw = df['Close'].copy() if 'Close' in df.columns.levels[0] else df.xs('Close', axis=1, level=0, drop_level=True).copy()
     else:
         raw = df['Close'].copy() if 'Close' in df else df.copy()
-    raw = raw.ffill()
-    weekly = raw.resample('W-FRI').last().ffill()
-    return weekly
+    return raw.ffill()
 
-# લાઈવ માર્કેટ ડેટા (Direct Yahoo JSON API)
 def fetch_realtime_quotes(ticker_list):
     quotes = {}
     for ticker in ticker_list:
@@ -81,35 +75,25 @@ def fetch_realtime_quotes(ticker_list):
                 change_pct = ((ltp - prev_close) / prev_close) * 100.0 if prev_close > 0 else 0.0
                 quotes[ticker] = (ltp, change_pct)
         except Exception:
-            try:
-                t = yf.Ticker(sym)
-                info = t.fast_info
-                ltp = float(info['lastPrice'])
-                prev_close = float(info['previousClose'])
-                change_pct = ((ltp - prev_close) / prev_close) * 100.0 if prev_close > 0 else 0.0
-                quotes[ticker] = (ltp, change_pct)
-            except Exception:
-                quotes[ticker] = (None, 0.0)
+            quotes[ticker] = (None, 0.0)
     return quotes
 
 if not selected_tickers:
     st.warning("No ETFs available in the basket.")
 else:
     with st.spinner("Fetching live market data..."):
-        df_weekly = fetch_weekly_data(selected_tickers)
+        df_daily = fetch_daily_data(selected_tickers)
         live_quotes = fetch_realtime_quotes(selected_tickers)
 
-        if df_weekly is not None and not df_weekly.empty and BENCHMARK_SYMBOL in df_weekly.columns:
-            bench_series = df_weekly[BENCHMARK_SYMBOL].dropna()
+        if df_daily is not None and not df_daily.empty and BENCHMARK_SYMBOL in df_daily.columns:
+            bench_daily = df_daily[BENCHMARK_SYMBOL].dropna()
+            bench_weekly = bench_daily.resample('W-FRI').last().ffill()
 
-            has_gold = "GOLDBEES.NS" in df_weekly.columns and len(df_weekly["GOLDBEES.NS"].dropna()) >= 55
-            has_silver = "SILVERBEES.NS" in df_weekly.columns and len(df_weekly["SILVERBEES.NS"].dropna()) >= 55
             silver_vs_gold_mrs = 0.0
-
-            if has_gold and has_silver:
-                g_series = df_weekly["GOLDBEES.NS"].dropna()
-                s_series = df_weekly["SILVERBEES.NS"].dropna()
-                combined_gs = pd.concat([s_series, g_series], axis=1, join='inner')
+            if "GOLDBEES.NS" in df_daily.columns and "SILVERBEES.NS" in df_daily.columns:
+                g_weekly = df_daily["GOLDBEES.NS"].dropna().resample('W-FRI').last().ffill()
+                s_weekly = df_daily["SILVERBEES.NS"].dropna().resample('W-FRI').last().ffill()
+                combined_gs = pd.concat([s_weekly, g_weekly], axis=1, join='inner')
                 ratio_series = combined_gs.iloc[:, 0] / combined_gs.iloc[:, 1]
                 sma52_ratio = ratio_series.rolling(52).mean()
                 mrs_gs_series = (((ratio_series / sma52_ratio) - 1.0) * 100.0).dropna()
@@ -119,34 +103,41 @@ else:
 
             for ticker in selected_tickers:
                 sym = f"{ticker}.NS"
-                if sym not in df_weekly.columns:
+                if sym not in df_daily.columns:
                     continue
 
-                series = df_weekly[sym].dropna()
-                if len(series) < 55:
+                d_series = df_daily[sym].dropna().copy()
+                if len(d_series) < 252:
                     continue
 
                 try:
-                    ema20 = float(series.ewm(span=20, adjust=False).mean().iloc[-1])
-                    rsi_series = get_tv_wilder_rsi(series, 14).dropna()
-                    if rsi_series.empty:
-                        continue
-                    rsi = float(rsi_series.iloc[-1])
-
                     ltp, daily_change_pct = live_quotes.get(ticker, (None, 0.0))
                     if ltp is None or ltp == 0.0:
-                        ltp = float(series.iloc[-1])
+                        ltp = float(d_series.iloc[-1])
 
-                    # 52-Week High
-                    high_52w = float(series.iloc[-52:].max())
+                    w_series = d_series.resample('W-FRI').last().ffill()
+                    w_series_live = w_series.copy()
+                    w_series_live.iloc[-1] = ltp
+
+                    ema20 = float(w_series_live.ewm(span=20, adjust=False).mean().iloc[-1])
+                    rsi = calculate_tradingview_rsi(w_series_live, 14)
+                    if np.isnan(rsi):
+                        continue
+
+                    # 52W High
+                    high_52w = float(w_series_live.iloc[-52:].max())
                     if ltp > high_52w:
                         high_52w = ltp
                     dist_52w_pct = ((ltp - high_52w) / high_52w) * 100.0
 
-                    # 6-Month (26W) & 12-Month (52W) Composite Momentum (નાનો સ્કોર)
-                    ret_26w = ((ltp - float(series.iloc[-26])) / float(series.iloc[-26])) * 100.0 if len(series) >= 26 else 0.0
-                    ret_52w = ((ltp - float(series.iloc[-52])) / float(series.iloc[-52])) * 100.0 if len(series) >= 52 else 0.0
+                    # Composite Return & Volatility-Adjusted Momentum
+                    ret_26w = ((ltp - float(w_series_live.iloc[-26])) / float(w_series_live.iloc[-26])) * 100.0 if len(w_series_live) >= 26 else 0.0
+                    ret_52w = ((ltp - float(w_series_live.iloc[-52])) / float(w_series_live.iloc[-52])) * 100.0 if len(w_series_live) >= 52 else 0.0
                     composite_mom = (ret_26w + ret_52w) / 2.0
+
+                    daily_ret = d_series.pct_change().dropna()[-252:]
+                    volatility = float(daily_ret.std() * np.sqrt(252) * 100.0) if len(daily_ret) >= 50 else 0.0
+                    raw_mom = (composite_mom / volatility) if volatility > 0 else -999.0
 
                     buffer_ema_pct = ((ltp - ema20) / ema20) * 100.0
                     above_ema = ltp > ema20
@@ -158,20 +149,14 @@ else:
 
                     if is_silver:
                         mrs_val = silver_vs_gold_mrs
-                        if silver_vs_gold_mrs > 0:
-                            mrs_display = f"Bullish (+{silver_vs_gold_mrs:.1f}%)"
-                        else:
-                            mrs_display = f"Bearish ({silver_vs_gold_mrs:.1f}%)"
+                        mrs_display = f"Bullish (+{silver_vs_gold_mrs:.1f}%)" if silver_vs_gold_mrs > 0 else f"Bearish ({silver_vs_gold_mrs:.1f}%)"
                         rs_cond = True
                     elif is_gold:
                         mrs_val = -silver_vs_gold_mrs
-                        if silver_vs_gold_mrs <= 0:
-                            mrs_display = "Bullish (Favoured)"
-                        else:
-                            mrs_display = "Neutral (Defensive)"
+                        mrs_display = "Bullish (Favoured)" if silver_vs_gold_mrs <= 0 else "Neutral (Defensive)"
                         rs_cond = True
                     else:
-                        combined = pd.concat([series, bench_series], axis=1, join='inner')
+                        combined = pd.concat([w_series_live, bench_weekly], axis=1, join='inner')
                         ratio = combined.iloc[:, 0] / combined.iloc[:, 1]
                         sma52 = ratio.rolling(52).mean()
                         mrs_series = (((ratio / sma52) - 1.0) * 100.0).dropna()
@@ -194,7 +179,7 @@ else:
                         'RSI': round(rsi, 2),
                         'Mansfield RS': mrs_display,
                         'mrs_val': mrs_val,
-                        'Mom Score': round(composite_mom, 2),
+                        'raw_mom': raw_mom,
                         'above_ema': above_ema,
                         'qualified_entry': qualified_entry
                     })
@@ -204,11 +189,14 @@ else:
             if data_rows:
                 df = pd.DataFrame(data_rows)
 
+                # ૧ થી ૧૦૦ પર્સેન્ટાઇલ મોમેન્ટમ સ્કોર
+                df['Mom Score'] = (df['raw_mom'].rank(pct=True) * 100).round().astype(int)
+
                 score_series = df['RSI'].copy()
                 if use_rs_filter:
                     score_series += (df['mrs_val'] * 2.0)
                 if use_mom_filter:
-                    score_series += (df['Mom Score'] * 0.5)
+                    score_series += (df['Mom Score'] * 0.25)
                 df['score'] = score_series
 
                 df = df.sort_values(by=['qualified_entry', 'score', 'RSI'], ascending=[False, False, False]).reset_index(drop=True)
@@ -230,8 +218,8 @@ else:
                 st.caption(f"🕒 Last Updated (IST): {datetime.datetime.now(ist_tz).strftime('%d-%b-%Y %I:%M:%S %p')}")
 
                 def highlight_rsi(val):
-                    if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;' # Sweet Spot
-                    elif val > 75: return 'background-color: #FFA726; color: black;'       # Extended / Hold only
+                    if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;'
+                    elif val > 75: return 'background-color: #FFA726; color: black;'
                     elif val <= 40: return 'background-color: #C62828; color: white;'
                     elif val <= 50: return 'background-color: #FFCDD2; color: black;'
                     return ''
@@ -273,16 +261,16 @@ else:
                         pass
                     return ''
 
-                # મોમેન્ટમ સ્કોર બેકગ્રાઉન્ડ કલર (RSI અને EMA જેવો સ્પષ્ટ કલર)
                 def highlight_mom_score(val):
                     try:
-                        f_val = float(val)
-                        if f_val >= 10.0:
+                        score = int(val)
+                        if score >= 80:
                             return 'background-color: #2E7D32; color: white; font-weight: bold;'
-                        elif f_val >= 0.0:
+                        elif score >= 60:
                             return 'background-color: #81C784; color: black;'
-                        else:
+                        elif score <= 35:
                             return 'background-color: #C62828; color: white; font-weight: bold;'
+                        return ''
                     except Exception:
                         return ''
 
@@ -309,10 +297,9 @@ else:
                     'RSI': '{:.2f}'
                 }
                 if use_mom_filter:
-                    format_dict['Mom Score'] = '{:+.1f}%'
+                    format_dict['Mom Score'] = '{:d}'
 
                 styled_df = style_pipe.format(format_dict)
-
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
             else:
                 st.warning("Market data is currently updating. Please refresh in a moment.")
