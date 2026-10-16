@@ -11,7 +11,7 @@ st.set_page_config(page_title="ETF Momentum Scanner", layout="wide")
 
 st.markdown("""
     <h2 style='text-align: center; color: #1E88E5;'>📊 ETF Momentum & RS Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px;'>Friday Rebalance Dashboard | 52W High, Vol-Adjusted Momentum (1-100) & Action Tags</p>
+    <p style='text-align: center; color: gray; font-size: 14px;'>Friday Rebalance Dashboard</p>
 """, unsafe_allow_html=True)
 
 DEFAULT_ETFS = [
