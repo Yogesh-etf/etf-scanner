@@ -52,7 +52,7 @@ BENCHMARK_SYMBOL = "^CRSLDX"  # Nifty 500
 # Header
 st.markdown("""
     <h2 style='text-align: center; color: #1E88E5; margin-bottom: 2px;'>📊 ETF Momentum & RS Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px; margin-top: 0px;'>Weekly Relative Strength & Volatility-Adjusted Momentum Model</p>
+    <p style='text-align: center; color: gray; font-size: 14px; margin-top: 0px;'>Friday Rebalance Dashbord</p>
 """, unsafe_allow_html=True)
 
 # Day Check Logic (IST)
