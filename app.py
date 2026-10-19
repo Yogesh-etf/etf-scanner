@@ -22,6 +22,15 @@ DEFAULT_ETFS = [
 ]
 BENCHMARK_SYMBOL = "^CRSLDX"  # Nifty 500
 
+# Nifty 500 બ્રોડ સેક્ટર પ્રોક્સી પૂલ (ઝડપી માર્કેટ બ્રેથ ગણતરી માટે)
+BREADTH_PROXIES = [
+    "NIFTYBEES.NS", "JUNIORBEES.NS", "MIDCAPIETF.NS", "HDFCSML250.NS",
+    "BANKBEES.NS", "ITBEES.NS", "PHARMABEES.NS", "AUTOBEES.NS",
+    "METALIETF.NS", "FMCGIETF.NS", "CPSEETF.NS", "COMMOIETF.NS",
+    "INFRABEES.NS", "CONSUMBEES.NS", "NV20IETF.NS"
+]
+
+# Sidebar Settings
 st.sidebar.header("⚙️ Scanner Settings")
 use_rs_filter = st.sidebar.checkbox("Include Nifty 500 Mansfield RS Filter", value=True)
 use_mom_filter = st.sidebar.checkbox("Include 6M/12M Momentum Filter & Score", value=True)
@@ -46,12 +55,13 @@ def calculate_tradingview_rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
 
+# સાપ્તાહિક તથા દૈનિક ડેટા ફેચિંગ
 @st.cache_data(ttl=300)
-def fetch_daily_data(ticker_list):
+def fetch_all_data(ticker_list):
     if not ticker_list:
         return None
-    symbols = list(set([f"{t}.NS" for t in ticker_list] + [BENCHMARK_SYMBOL, "GOLDBEES.NS", "SILVERBEES.NS"]))
-    df = yf.download(symbols, period="5y", interval="1d", auto_adjust=False, progress=False)
+    all_symbols = list(set([f"{t}.NS" for t in ticker_list] + [BENCHMARK_SYMBOL, "GOLDBEES.NS", "SILVERBEES.NS"] + BREADTH_PROXIES))
+    df = yf.download(all_symbols, period="5y", interval="1d", auto_adjust=False, progress=False)
     if df.empty:
         return None
     if isinstance(df.columns, pd.MultiIndex):
@@ -82,12 +92,49 @@ if not selected_tickers:
     st.warning("No ETFs available in the basket.")
 else:
     with st.spinner("Fetching live market data..."):
-        df_daily = fetch_daily_data(selected_tickers)
+        df_daily = fetch_all_data(selected_tickers)
         live_quotes = fetch_realtime_quotes(selected_tickers)
 
-        if df_daily is not None and not df_daily.empty and BENCHMARK_SYMBOL in df_daily.columns:
-            bench_daily = df_daily[BENCHMARK_SYMBOL].dropna()
-            bench_weekly = bench_daily.resample('W-FRI').last().ffill()
+        if df_daily is not None and not df_daily.empty:
+            
+            # --- ૧. MARKET BREADTH INDICATOR (ટોપ પર ડિસ્પ્લે) ---
+            breadth_rsi_list = []
+            for sym in BREADTH_PROXIES:
+                if sym in df_daily.columns:
+                    s_series = df_daily[sym].dropna()
+                    if len(s_series) >= 100:
+                        w_s = s_series.resample('W-FRI').last().ffill()
+                        r = calculate_tradingview_rsi(w_s, 14)
+                        if not np.isnan(r):
+                            breadth_rsi_list.append(r)
+
+            if breadth_rsi_list:
+                above_50 = sum(1 for r in breadth_rsi_list if r > 50.0)
+                total_b = len(breadth_rsi_list)
+                pct_above_50 = (above_50 / total_b) * 100.0
+                pct_below_50 = 100.0 - pct_above_50
+
+                # બેન્ચમાર્ક Nifty 500 નો સાપ્તાહિક RSI
+                bench_rsi = 50.0
+                if BENCHMARK_SYMBOL in df_daily.columns:
+                    b_w = df_daily[BENCHMARK_SYMBOL].dropna().resample('W-FRI').last().ffill()
+                    b_val = calculate_tradingview_rsi(b_w, 14)
+                    if not np.isnan(b_val):
+                        bench_rsi = b_val
+
+                col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+                col_b1.metric("🟢 Market Breadth (RSI > 50)", f"{pct_above_50:.1f}%", f"{above_50}/{total_b} Sectors Bullish")
+                col_b2.metric("🔴 Market Breadth (RSI <= 50)", f"{pct_below_50:.1f}%", f"{total_b - above_50}/{total_b} Sectors Weak")
+                col_b3.metric("📈 Nifty 500 Weekly RSI", f"{bench_rsi:.1f}", "Bullish Zone" if bench_rsi >= 50 else "Bearish Zone")
+                
+                market_status = "BULLISH BIAS" if pct_above_50 >= 60 else ("BEARISH / CAUTION" if pct_above_50 <= 40 else "NEUTRAL RANGE")
+                col_b4.metric("🛡️ Market Environment", market_status, f"{'Aggressive' if pct_above_50 >= 60 else 'Defensive'} Setup")
+
+                st.markdown("<hr style='margin-top: 5px; margin-bottom: 20px;'/>", unsafe_allow_html=True)
+
+            # --- ૨. ETF સ્કેનર ગણતરી ---
+            bench_daily = df_daily[BENCHMARK_SYMBOL].dropna() if BENCHMARK_SYMBOL in df_daily.columns else None
+            bench_weekly = bench_daily.resample('W-FRI').last().ffill() if bench_daily is not None else None
 
             silver_vs_gold_mrs = 0.0
             if "GOLDBEES.NS" in df_daily.columns and "SILVERBEES.NS" in df_daily.columns:
@@ -156,12 +203,15 @@ else:
                         mrs_display = "Bullish (Favoured)" if silver_vs_gold_mrs <= 0 else "Neutral (Defensive)"
                         rs_cond = True
                     else:
-                        combined = pd.concat([w_series_live, bench_weekly], axis=1, join='inner')
-                        ratio = combined.iloc[:, 0] / combined.iloc[:, 1]
-                        sma52 = ratio.rolling(52).mean()
-                        mrs_series = (((ratio / sma52) - 1.0) * 100.0).dropna()
-                        mrs = float(mrs_series.iloc[-1]) if not mrs_series.empty else 0.0
-                        mrs_display = f"{mrs:.2f}"
+                        mrs = 0.0
+                        mrs_display = "0.00"
+                        if bench_weekly is not None:
+                            combined = pd.concat([w_series_live, bench_weekly], axis=1, join='inner')
+                            ratio = combined.iloc[:, 0] / combined.iloc[:, 1]
+                            sma52 = ratio.rolling(52).mean()
+                            mrs_series = (((ratio / sma52) - 1.0) * 100.0).dropna()
+                            mrs = float(mrs_series.iloc[-1]) if not mrs_series.empty else 0.0
+                            mrs_display = f"{mrs:.2f}"
                         mrs_val = mrs
                         rs_cond = (mrs > 0.0) if use_rs_filter else True
 
@@ -274,18 +324,24 @@ else:
                     except Exception:
                         return ''
 
-                cols_to_show = ['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', '52W High (%)', 'EMA 20', 'RSI', 'Mansfield RS']
+                # --- ડાયનેમિક કૉલમ લિસ્ટ (ચેકબૉક્સ મુજબ હાઈડ/શો) ---
+                cols_to_show = ['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', '52W High (%)', 'EMA 20', 'RSI']
+                
+                if use_rs_filter:
+                    cols_to_show.append('Mansfield RS')
                 if use_mom_filter:
                     cols_to_show.append('Mom Score')
+                    
                 cols_to_show.append('Friday Action')
 
                 view_df = df[cols_to_show]
                 style_pipe = view_df.style.apply(highlight_ema_row, axis=1)\
                                           .map(highlight_rsi, subset=['RSI'])\
                                           .map(highlight_change, subset=['Change (%)'])\
-                                          .map(highlight_52w, subset=['52W High (%)'])\
-                                          .map(highlight_mrs, subset=['Mansfield RS'])
-                
+                                          .map(highlight_52w, subset=['52W High (%)'])
+
+                if use_rs_filter:
+                    style_pipe = style_pipe.map(highlight_mrs, subset=['Mansfield RS'])
                 if use_mom_filter:
                     style_pipe = style_pipe.map(highlight_mom_score, subset=['Mom Score'])
 
