@@ -9,26 +9,69 @@ import yfinance as yf
 
 st.set_page_config(page_title="ETF Momentum Scanner", layout="wide")
 
+# CSS Animation for Blinking Alert
 st.markdown("""
-    <h2 style='text-align: center; color: #1E88E5;'>📊 ETF Momentum & RS Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px;'>Friday Rebalance Dashboard</p>
+    <style>
+    @keyframes blinker {
+        50% { opacity: 0.25; }
+    }
+    .blink-alert {
+        animation: blinker 1.8s linear infinite;
+        background-color: #FFF3CD;
+        color: #856404;
+        border: 1px solid #FFEEBA;
+        padding: 8px 16px;
+        border-radius: 6px;
+        text-align: center;
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 12px;
+    }
+    .friday-active {
+        background-color: #D4EDDA;
+        color: #155724;
+        border: 1px solid #C3E6CB;
+        padding: 8px 16px;
+        border-radius: 6px;
+        text-align: center;
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 12px;
+    }
+    </style>
 """, unsafe_allow_html=True)
 
 DEFAULT_ETFS = [
     "PHARMABEES", "HDFCSML250", "METALIETF", "GOLDBEES",
     "MODEFENCE", "JUNIORBEES", "MIDCAPIETF", "SILVERBEES",
     "MOM30IETF", "COMMOIETF", "ITBEES", "VAL30IETF",
-    "CPSEETF", "AUTOBEES", "MOREALTY",
+    "CPSEETF", "AUTOBEES", "MOREALTY"
 ]
 BENCHMARK_SYMBOL = "^CRSLDX"  # Nifty 500
 
-# Nifty 500 બ્રોડ સેક્ટર પ્રોક્સી પૂલ (ઝડપી માર્કેટ બ્રેથ ગણતરી માટે)
-BREADTH_PROXIES = [
-    "NIFTYBEES.NS", "JUNIORBEES.NS", "MIDCAPIETF.NS", "HDFCSML250.NS",
-    "BANKBEES.NS", "ITBEES.NS", "PHARMABEES.NS", "AUTOBEES.NS",
-    "METALIETF.NS", "FMCGIETF.NS", "CPSEETF.NS", "COMMOIETF.NS",
-    "INFRABEES.NS", "CONSUMBEES.NS", "NV20IETF.NS"
-]
+# Header
+st.markdown("""
+    <h2 style='text-align: center; color: #1E88E5; margin-bottom: 2px;'>📊 ETF Momentum & RS Scanner</h2>
+    <p style='text-align: center; color: gray; font-size: 14px; margin-top: 0px;'>Weekly Relative Strength & Volatility-Adjusted Momentum Model</p>
+""", unsafe_allow_html=True)
+
+# Day Check Logic (IST)
+ist_tz = pytz.timezone("Asia/Kolkata")
+now_ist = datetime.datetime.now(ist_tz)
+current_day = now_ist.strftime("%A")  # Monday, Tuesday, ...
+
+if current_day != "Friday":
+    st.markdown(f"""
+        <div class="blink-alert">
+            ⚠️ NOTICE: Today is {current_day} (NOT Friday). Showing mid-week preview. Official rebalance signals trigger on Friday at 3:15 PM IST.
+        </div>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("""
+        <div class="friday-active">
+            🟢 TODAY IS FRIDAY — Weekly Rebalance Day (Execute target allocation orders between 3:15 PM – 3:25 PM IST)
+        </div>
+    """, unsafe_allow_html=True)
 
 # Sidebar Settings
 st.sidebar.header("⚙️ Scanner Settings")
@@ -55,13 +98,12 @@ def calculate_tradingview_rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
 
-# સાપ્તાહિક તથા દૈનિક ડેટા ફેચિંગ
 @st.cache_data(ttl=300)
-def fetch_all_data(ticker_list):
+def fetch_etf_data(ticker_list):
     if not ticker_list:
         return None
-    all_symbols = list(set([f"{t}.NS" for t in ticker_list] + [BENCHMARK_SYMBOL, "GOLDBEES.NS", "SILVERBEES.NS"] + BREADTH_PROXIES))
-    df = yf.download(all_symbols, period="5y", interval="1d", auto_adjust=False, progress=False)
+    symbols = list(set([f"{t}.NS" for t in ticker_list] + [BENCHMARK_SYMBOL, "GOLDBEES.NS", "SILVERBEES.NS"]))
+    df = yf.download(symbols, period="5y", interval="1d", auto_adjust=False, progress=False)
     if df.empty:
         return None
     if isinstance(df.columns, pd.MultiIndex):
@@ -85,54 +127,25 @@ def fetch_realtime_quotes(ticker_list):
                 change_pct = ((ltp - prev_close) / prev_close) * 100.0 if prev_close > 0 else 0.0
                 quotes[ticker] = (ltp, change_pct)
         except Exception:
-            quotes[ticker] = (None, 0.0)
+            try:
+                t = yf.Ticker(sym)
+                info = t.fast_info
+                ltp = float(info['lastPrice'])
+                prev_close = float(info['previousClose'])
+                change_pct = ((ltp - prev_close) / prev_close) * 100.0 if prev_close > 0 else 0.0
+                quotes[ticker] = (ltp, change_pct)
+            except Exception:
+                quotes[ticker] = (None, 0.0)
     return quotes
 
 if not selected_tickers:
     st.warning("No ETFs available in the basket.")
 else:
     with st.spinner("Fetching live market data..."):
-        df_daily = fetch_all_data(selected_tickers)
+        df_daily = fetch_etf_data(selected_tickers)
         live_quotes = fetch_realtime_quotes(selected_tickers)
 
         if df_daily is not None and not df_daily.empty:
-            
-            # --- ૧. MARKET BREADTH INDICATOR (ટોપ પર ડિસ્પ્લે) ---
-            breadth_rsi_list = []
-            for sym in BREADTH_PROXIES:
-                if sym in df_daily.columns:
-                    s_series = df_daily[sym].dropna()
-                    if len(s_series) >= 100:
-                        w_s = s_series.resample('W-FRI').last().ffill()
-                        r = calculate_tradingview_rsi(w_s, 14)
-                        if not np.isnan(r):
-                            breadth_rsi_list.append(r)
-
-            if breadth_rsi_list:
-                above_50 = sum(1 for r in breadth_rsi_list if r > 50.0)
-                total_b = len(breadth_rsi_list)
-                pct_above_50 = (above_50 / total_b) * 100.0
-                pct_below_50 = 100.0 - pct_above_50
-
-                # બેન્ચમાર્ક Nifty 500 નો સાપ્તાહિક RSI
-                bench_rsi = 50.0
-                if BENCHMARK_SYMBOL in df_daily.columns:
-                    b_w = df_daily[BENCHMARK_SYMBOL].dropna().resample('W-FRI').last().ffill()
-                    b_val = calculate_tradingview_rsi(b_w, 14)
-                    if not np.isnan(b_val):
-                        bench_rsi = b_val
-
-                col_b1, col_b2, col_b3, col_b4 = st.columns(4)
-                col_b1.metric("🟢 Market Breadth (RSI > 50)", f"{pct_above_50:.1f}%", f"{above_50}/{total_b} Sectors Bullish")
-                col_b2.metric("🔴 Market Breadth (RSI <= 50)", f"{pct_below_50:.1f}%", f"{total_b - above_50}/{total_b} Sectors Weak")
-                col_b3.metric("📈 Nifty 500 Weekly RSI", f"{bench_rsi:.1f}", "Bullish Zone" if bench_rsi >= 50 else "Bearish Zone")
-                
-                market_status = "BULLISH BIAS" if pct_above_50 >= 60 else ("BEARISH / CAUTION" if pct_above_50 <= 40 else "NEUTRAL RANGE")
-                col_b4.metric("🛡️ Market Environment", market_status, f"{'Aggressive' if pct_above_50 >= 60 else 'Defensive'} Setup")
-
-                st.markdown("<hr style='margin-top: 5px; margin-bottom: 20px;'/>", unsafe_allow_html=True)
-
-            # --- ૨. ETF સ્કેનર ગણતરી ---
             bench_daily = df_daily[BENCHMARK_SYMBOL].dropna() if BENCHMARK_SYMBOL in df_daily.columns else None
             bench_weekly = bench_daily.resample('W-FRI').last().ffill() if bench_daily is not None else None
 
@@ -239,7 +252,7 @@ else:
             if data_rows:
                 df = pd.DataFrame(data_rows)
 
-                # ૧ થી ૧૦૦ પર્સેન્ટાઇલ મોમેન્ટમ સ્કોર
+                # 1 to 100 Percentile Momentum Score
                 df['Mom Score'] = (df['raw_mom'].rank(pct=True) * 100).round().astype(int)
 
                 score_series = df['RSI'].copy()
@@ -264,8 +277,7 @@ else:
                         actions.append("🟡 Safe Hold")
                 df['Friday Action'] = actions
 
-                ist_tz = pytz.timezone("Asia/Kolkata")
-                st.caption(f"🕒 Last Updated (IST): {datetime.datetime.now(ist_tz).strftime('%d-%b-%Y %I:%M:%S %p')}")
+                st.caption(f"🕒 Last Updated (IST): {now_ist.strftime('%d-%b-%Y %I:%M:%S %p')}")
 
                 def highlight_rsi(val):
                     if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;'
@@ -324,14 +336,12 @@ else:
                     except Exception:
                         return ''
 
-                # --- ડાયનેમિક કૉલમ લિસ્ટ (ચેકબૉક્સ મુજબ હાઈડ/શો) ---
+                # Dynamically hide/show columns based on sidebar checkboxes
                 cols_to_show = ['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', '52W High (%)', 'EMA 20', 'RSI']
-                
                 if use_rs_filter:
                     cols_to_show.append('Mansfield RS')
                 if use_mom_filter:
                     cols_to_show.append('Mom Score')
-                    
                 cols_to_show.append('Friday Action')
 
                 view_df = df[cols_to_show]
