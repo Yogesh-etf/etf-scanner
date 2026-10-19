@@ -9,35 +9,18 @@ import yfinance as yf
 
 st.set_page_config(page_title="ETF Momentum Scanner", layout="wide")
 
-# CSS Animation for Blinking Alert
+# પેડિંગ ઘટાડીને સિંગલ સ્ક્રીન ફિટિંગ માટે કોમ્પેક્ટ CSS
 st.markdown("""
     <style>
-    @keyframes blinker {
-        50% { opacity: 0.25; }
+    .block-container {
+        padding-top: 1.2rem;
+        padding-bottom: 0rem;
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
     }
-    .blink-alert {
-        animation: blinker 1.8s linear infinite;
-        background-color: #FFF3CD;
-        color: #856404;
-        border: 1px solid #FFEEBA;
-        padding: 8px 16px;
-        border-radius: 6px;
-        text-align: center;
-        font-weight: 600;
-        font-size: 14px;
-        margin-bottom: 12px;
-    }
-    .friday-active {
-        background-color: #D4EDDA;
-        color: #155724;
-        border: 1px solid #C3E6CB;
-        padding: 8px 16px;
-        border-radius: 6px;
-        text-align: center;
-        font-weight: 600;
-        font-size: 14px;
-        margin-bottom: 12px;
-    }
+    header {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -49,29 +32,17 @@ DEFAULT_ETFS = [
 ]
 BENCHMARK_SYMBOL = "^CRSLDX"  # Nifty 500
 
-# Header
-st.markdown("""
-    <h2 style='text-align: center; color: #1E88E5; margin-bottom: 2px;'>📊 ETF Momentum Scanner</h2>
-    <p style='text-align: center; color: gray; font-size: 14px; margin-top: 0px;'>Friday Rebalance Dashbord</p>
-""", unsafe_allow_html=True)
-
-# Day Check Logic (IST)
+# સાદો અને નાનો સિંગલ લાઇન હેડર
 ist_tz = pytz.timezone("Asia/Kolkata")
 now_ist = datetime.datetime.now(ist_tz)
-current_day = now_ist.strftime("%A")  # Monday, Tuesday, ...
+day_str = now_ist.strftime("%A")
 
-if current_day != "Friday":
-    st.markdown(f"""
-        <div class="blink-alert">
-            ⚠️ NOTICE: Today is {current_day} (NOT Friday). Showing mid-week preview. Official rebalance signals trigger on Friday at 3:15 PM IST.
-        </div>
-    """, unsafe_allow_html=True)
-else:
-    st.markdown("""
-        <div class="friday-active">
-            🟢 TODAY IS FRIDAY — Weekly Rebalance Day (Execute target allocation orders between 3:15 PM – 3:25 PM IST)
-        </div>
-    """, unsafe_allow_html=True)
+st.markdown(f"""
+    <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;'>
+        <h3 style='margin: 0; color: #1E88E5;'>ETF Momentum Scanner</h3>
+        <span style='color: gray; font-size: 13px;'>{day_str} | {now_ist.strftime('%d-%b-%Y %I:%M %p')} IST</span>
+    </div>
+""", unsafe_allow_html=True)
 
 # Sidebar Settings
 st.sidebar.header("⚙️ Scanner Settings")
@@ -277,8 +248,6 @@ else:
                         actions.append("🟡 Safe Hold")
                 df['Friday Action'] = actions
 
-                st.caption(f"🕒 Last Updated (IST): {now_ist.strftime('%d-%b-%Y %I:%M:%S %p')}")
-
                 def highlight_rsi(val):
                     if 60 <= val <= 75: return 'background-color: #2E7D32; color: white;'
                     elif val > 75: return 'background-color: #FFA726; color: black;'
@@ -336,7 +305,6 @@ else:
                     except Exception:
                         return ''
 
-                # Dynamically hide/show columns based on sidebar checkboxes
                 cols_to_show = ['Rank', 'ETF', 'Type', 'LTP', 'Change (%)', '52W High (%)', 'EMA 20', 'RSI']
                 if use_rs_filter:
                     cols_to_show.append('Mansfield RS')
